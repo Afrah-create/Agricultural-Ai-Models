@@ -6,31 +6,17 @@
 *.pb
 *.onnx
 
-# Large data files
-*.csv
-*.json
-!railway.json
-!deployment/railway.json
-!package.json
-!tsconfig.json
+# Large data files - Allow all files
 *.pkl
 *.pickle
 *.parquet
 
-# Directories with large files
-deployment/quick_fine_tuned_fast/
-deployment/data/
-deployment/processed/
-deployment/models/
+# Directories with large files - Keep them for deployment
+# deployment/quick_fine_tuned_fast/
+# deployment/data/
+# deployment/processed/
+# deployment/models/
 Literature_reviews/
-
-# Specific large files to exclude from deployment
-**/optimizer.pt
-**/model.safetensors
-deployment/processed/unified_knowledge_graph.json
-deployment/data/unified_knowledge_graph.json
-deployment/processed/dataset_triples.json
-deployment/data/dataset_triples.json
 
 # Python
 __pycache__/

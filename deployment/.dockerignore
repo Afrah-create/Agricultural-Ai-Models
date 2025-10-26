@@ -19,11 +19,6 @@ README.md
 ARCHITECTURE.md
 CLOUD_DEPLOYMENT_GUIDE.md
 
-# Exclude large unused files (save 1.2GB!)
-quick_fine_tuned_fast/
-data/
-processed/unified_knowledge_graph.json
-processed/dataset_triples.json
-**/optimizer.pt
-**/model.safetensors
+# Keep all data and models for deployment
+# Only exclude non-essential files above
 
