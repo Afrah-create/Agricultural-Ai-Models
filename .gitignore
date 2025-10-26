@@ -24,6 +24,14 @@ deployment/processed/
 deployment/models/
 Literature_reviews/
 
+# Specific large files to exclude from deployment
+**/optimizer.pt
+**/model.safetensors
+deployment/processed/unified_knowledge_graph.json
+deployment/data/unified_knowledge_graph.json
+deployment/processed/dataset_triples.json
+deployment/data/dataset_triples.json
+
 # Python
 __pycache__/
 *.py[cod]
