@@ -1,0 +1,58 @@
+# Model files (too large for git)
+*.pth
+*.safetensors
+*.ckpt
+*.h5
+*.pb
+*.onnx
+
+# Large data files
+*.csv
+*.json
+*.pkl
+*.pickle
+*.parquet
+
+# Directories with large files
+deployment/quick_fine_tuned_fast/
+deployment/data/
+deployment/processed/
+deployment/models/
+Literature_reviews/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+
+# Flask
+instance/
+.webassets-cache
+
+# Environment variables
+.env
+.env.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Temporary files
+*.tmp
+*.temp
+

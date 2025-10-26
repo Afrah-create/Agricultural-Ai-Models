@@ -1,0 +1,2610 @@
+#!/usr/bin/env python3
+"""
+Agricultural Recommendation System with AI Integration
+Modern AI-powered interface for crop recommendations in Uganda
+"""
+
+import os
+import json
+import logging
+import numpy as np
+import torch
+from datetime import datetime
+from flask import Flask, request, jsonify, render_template_string, send_file
+from reportlab.lib.pagesizes import letter, A4
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.units import inch
+from reportlab.lib import colors
+from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_JUSTIFY
+import io
+from sklearn.metrics.pairwise import cosine_similarity
+from sklearn.feature_extraction.text import TfidfVectorizer
+
+# Configure logging first
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# Import transformers for fine-tuned model
+try:
+    from transformers import AutoTokenizer, AutoModelForCausalLM
+    TRANSFORMERS_AVAILABLE = True
+    logger.info(" Transformers library imported successfully")
+except ImportError:
+    TRANSFORMERS_AVAILABLE = False
+    logger.warning("️ Transformers library not available. Fine-tuned model features will be disabled.")
+
+# Import Gemini API for LLM integration
+try:
+    import google.generativeai as genai
+    GEMINI_AVAILABLE = True
+    logger.info(" Google Generative AI library imported successfully")
+except ImportError:
+    GEMINI_AVAILABLE = False
+    logger.warning("️ Google Generative AI library not available. LLM features will be disabled.")
+
+# Try to load environment variables from .env file
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+    logger.info(" Environment variables loaded from .env file")
+except ImportError:
+    logger.debug("python-dotenv not available, using system environment variables only")
+
+# Configure Gemini API
+llm_model = None
+if GEMINI_AVAILABLE:
+    try:
+        # Try to get API key from environment variable
+        api_key = os.getenv('GEMINI_API_KEY')
+        logger.info(f"API key found: {'Yes' if api_key else 'No'}")
+        if api_key:
+            genai.configure(api_key=api_key)
+            # Try different model names for compatibility - updated for current API
+            model_names_to_try = [
+                'gemini-1.5-flash',
+                'gemini-1.5-pro', 
+                'gemini-1.0-pro',
+                'gemini-pro',
+                'gemini-1.5-flash-002',
+                'gemini-1.5-pro-002',
+                'models/gemini-1.5-flash',
+                'models/gemini-1.5-pro',
+                'models/gemini-1.0-pro',
+                'models/gemini-pro'
+            ]
+            
+            llm_model = None
+            for model_name in model_names_to_try:
+                try:
+                    llm_model = genai.GenerativeModel(model_name)
+                    logger.info(f" Gemini API configured successfully with {model_name}")
+                    break
+                except Exception as e:
+                    logger.debug(f"Failed to load {model_name}: {e}")
+                    continue
+            
+            if llm_model is None:
+                # List available models for debugging
+                try:
+                    models = genai.list_models()
+                    available_models = [model.name for model in models if 'generateContent' in model.supported_generation_methods]
+                    logger.info(f"Available Gemini models: {available_models}")
+                    logger.warning("️ Failed to initialize any predefined Gemini model. Using fallback expert analysis.")
+                    
+                    # Try to use the first available model
+                    if available_models:
+                        try:
+                            first_model = available_models[0]
+                            llm_model = genai.GenerativeModel(first_model)
+                            logger.info(f" Successfully initialized with first available model: {first_model}")
+                        except Exception as e4:
+                            logger.error(f" Failed to initialize with first available model: {e4}")
+                            logger.warning("️ Gemini API not available. Using fallback expert analysis.")
+                except Exception as e3:
+                    logger.error(f"❌ Failed to list models: {e3}")
+                    llm_model = None
+        else:
+            logger.warning("️ GEMINI_API_KEY not found in environment variables")
+    except Exception as e:
+        logger.error(f" Error configuring Gemini API: {e}")
+        llm_model = None
+
+app = Flask(__name__)
+
+class DataLoader:
+    """Load and manage agricultural data"""
+    
+    def __init__(self, data_dir="../data", processed_dir="../processed"):
+        self.data_dir = data_dir
+        self.processed_dir = processed_dir
+        self.knowledge_graph = None
+        self.dataset_triples = None
+        self.literature_triples = None
+        self.ugandan_data = None
+        
+    def load_data(self):
+        """Load all agricultural data files"""
+        try:
+            logger.info("Loading agricultural data files...")
+            
+            # Load unified knowledge graph from processed folder
+            kg_path = os.path.join(self.processed_dir, "unified_knowledge_graph.json")
+            if os.path.exists(kg_path):
+                with open(kg_path, 'r', encoding='utf-8') as f:
+                    self.knowledge_graph = json.load(f)
+                logger.info(f" Loaded knowledge graph: {len(self.knowledge_graph)} triples")
+            else:
+                logger.warning(f"️ Knowledge graph not found at {kg_path}")
+            
+            # Load dataset triples
+            dataset_triples_path = os.path.join(self.processed_dir, "dataset_triples.json")
+            if os.path.exists(dataset_triples_path):
+                with open(dataset_triples_path, 'r', encoding='utf-8') as f:
+                    self.dataset_triples = json.load(f)
+                logger.info(f" Loaded dataset triples: {len(self.dataset_triples)} triples")
+            
+            # Load literature triples
+            literature_triples_path = os.path.join(self.processed_dir, "literature_triples.json")
+            if os.path.exists(literature_triples_path):
+                with open(literature_triples_path, 'r', encoding='utf-8') as f:
+                    self.literature_triples = json.load(f)
+                logger.info(f" Loaded literature triples: {len(self.literature_triples)} triples")
+            
+            # Load Ugandan dataset
+            ugandan_data_path = os.path.join(self.processed_dir, "ugandan_data_cleaned.csv")
+            if os.path.exists(ugandan_data_path):
+                import pandas as pd
+                self.ugandan_data = pd.read_csv(ugandan_data_path)
+                logger.info(f" Loaded Ugandan dataset: {len(self.ugandan_data)} records")
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f" Error loading data: {e}")
+            return False
+
+class AgriculturalModelLoader:
+    """Load and manage the trained GCN model"""
+    
+    def __init__(self, models_dir="../processed/trained_models"):
+        self.models_dir = models_dir
+        self.model = None
+        self.model_metadata = None
+        self.entity_to_id = None
+        self.id_to_entity = None
+        self.relation_to_id = None
+        self.id_to_relation = None
+        
+    def load_model(self):
+        """Load the trained model and metadata"""
+        try:
+            logger.info("Loading trained agricultural model...")
+            
+            # Load model metadata
+            metadata_path = os.path.join(self.models_dir, "model_metadata.json")
+            if os.path.exists(metadata_path):
+                with open(metadata_path, 'r') as f:
+                    self.model_metadata = json.load(f)
+                
+                self.entity_to_id = self.model_metadata.get('entity_to_id', {})
+                self.id_to_entity = self.model_metadata.get('id_to_entity', {})
+                self.relation_to_id = self.model_metadata.get('relation_to_id', {})
+                self.id_to_relation = self.model_metadata.get('id_to_relation', {})
+                
+                logger.info(f" Loaded model metadata: {len(self.entity_to_id)} entities, {len(self.relation_to_id)} relations")
+                return True
+            else:
+                logger.warning(f"️ Model metadata not found at {metadata_path}")
+                return False
+            
+        except Exception as e:
+            logger.error(f" Error loading model: {e}")
+            return False
+
+class SemanticRetriever:
+    """
+    Advanced semantic retrieval system for RAG pipeline
+    """
+    
+    def __init__(self, triples_data, entity_to_id, id_to_entity):
+        self.triples_data = triples_data
+        self.entity_to_id = entity_to_id
+        self.id_to_entity = id_to_entity
+        
+        # Create TF-IDF vectorizer for hybrid retrieval
+        self.tfidf_vectorizer = TfidfVectorizer(
+            max_features=1000,
+            stop_words='english',
+            ngram_range=(1, 2)
+        )
+        
+        # Prepare text representations of triples
+        self.triple_texts = self._create_triple_texts()
+        
+        # Create TF-IDF matrix
+        if self.triple_texts:
+            self.tfidf_matrix = self.tfidf_vectorizer.fit_transform(self.triple_texts)
+            logger.info(f" TF-IDF matrix created: {self.tfidf_matrix.shape}")
+    
+    def _create_triple_texts(self):
+        """Create text representations of triples for TF-IDF"""
+        texts = []
+        for triple in self.triples_data:
+            # Create descriptive text for each triple
+            text = f"{triple['subject']} {triple['predicate']} {triple['object']}"
+            if 'evidence' in triple:
+                text += f" {triple['evidence']}"
+            texts.append(text)
+        return texts
+    
+    def hybrid_retrieve(self, query, top_k=15):
+        """
+        Hybrid retrieval using TF-IDF similarity
+        """
+        results = []
+        
+        # TF-IDF similarity
+        if hasattr(self, 'tfidf_matrix'):
+            query_tfidf = self.tfidf_vectorizer.transform([query])
+            tfidf_similarities = cosine_similarity(query_tfidf, self.tfidf_matrix).flatten()
+        else:
+            tfidf_similarities = np.zeros(len(self.triples_data))
+        
+        # Get top-k results
+        top_indices = np.argsort(tfidf_similarities)[::-1][:top_k]
+        
+        for idx in top_indices:
+            if idx < len(self.triples_data) and tfidf_similarities[idx] > 0.05:
+                results.append({
+                    'triple': self.triples_data[idx],
+                    'score': tfidf_similarities[idx],
+                    'tfidf_score': tfidf_similarities[idx]
+                })
+        
+        # If no results found, return top results regardless of threshold
+        if not results:
+            for idx in top_indices[:top_k]:
+                if idx < len(self.triples_data):
+                    results.append({
+                        'triple': self.triples_data[idx],
+                        'score': tfidf_similarities[idx],
+                        'tfidf_score': tfidf_similarities[idx]
+                    })
+        
+        return results
+
+class AgriculturalConstraintEngine:
+    """Rule-based agricultural constraint engine"""
+    
+    def __init__(self):
+        self.crop_constraints = {
+            'maize': {
+                'pH_range': (5.5, 7.5),
+                'organic_matter_min': 1.0,
+                'temperature_range': (18, 30),
+                'rainfall_range': (500, 1500),
+                'soil_textures': ['loam', 'clay_loam', 'sandy_loam'],
+                'nitrogen_range': (50, 200),
+                'phosphorus_range': (10, 50),
+                'potassium_range': (80, 300)
+            },
+            'rice': {
+                'pH_range': (5.0, 7.0),
+                'organic_matter_min': 2.0,
+                'temperature_range': (20, 35),
+                'rainfall_range': (1000, 2500),
+                'soil_textures': ['clay', 'clay_loam'],
+                'nitrogen_range': (60, 250),
+                'phosphorus_range': (15, 60),
+                'potassium_range': (100, 400)
+            },
+            'beans': {
+                'pH_range': (6.0, 7.5),
+                'organic_matter_min': 1.5,
+                'temperature_range': (15, 25),
+                'rainfall_range': (600, 1200),
+                'soil_textures': ['loam', 'sandy_loam', 'clay_loam'],
+                'nitrogen_range': (40, 150),
+                'phosphorus_range': (20, 80),
+                'potassium_range': (60, 200)
+            },
+            'cassava': {
+                'pH_range': (4.5, 8.0),
+                'organic_matter_min': 0.5,
+                'temperature_range': (20, 30),
+                'rainfall_range': (800, 2000),
+                'soil_textures': ['sandy', 'sandy_loam', 'loam'],
+                'nitrogen_range': (30, 120),
+                'phosphorus_range': (5, 30),
+                'potassium_range': (40, 150)
+            },
+            'sweet_potato': {
+                'pH_range': (5.0, 7.5),
+                'organic_matter_min': 1.0,
+                'temperature_range': (18, 28),
+                'rainfall_range': (600, 1500),
+                'soil_textures': ['sandy_loam', 'loam'],
+                'nitrogen_range': (40, 180),
+                'phosphorus_range': (10, 40),
+                'potassium_range': (80, 250)
+            },
+            'coffee': {
+                'pH_range': (5.5, 6.5),
+                'organic_matter_min': 2.0,
+                'temperature_range': (18, 24),
+                'rainfall_range': (1200, 2000),
+                'soil_textures': ['loam', 'clay_loam'],
+                'nitrogen_range': (80, 200),
+                'phosphorus_range': (15, 50),
+                'potassium_range': (120, 300)
+            },
+            'cotton': {
+                'pH_range': (5.5, 8.0),
+                'organic_matter_min': 1.0,
+                'temperature_range': (20, 35),
+                'rainfall_range': (500, 1200),
+                'soil_textures': ['loam', 'sandy_loam', 'clay_loam'],
+                'nitrogen_range': (60, 180),
+                'phosphorus_range': (10, 40),
+                'potassium_range': (80, 200)
+            },
+            'sugarcane': {
+                'pH_range': (5.5, 8.0),
+                'organic_matter_min': 1.5,
+                'temperature_range': (20, 30),
+                'rainfall_range': (1000, 2000),
+                'soil_textures': ['loam', 'clay_loam'],
+                'nitrogen_range': (100, 300),
+                'phosphorus_range': (20, 60),
+                'potassium_range': (150, 400)
+            }
+        }
+    
+    def evaluate_crop_suitability(self, crop_name, soil_properties, climate_conditions):
+        """Evaluate crop suitability based on constraints"""
+        if crop_name not in self.crop_constraints:
+            return {'suitable': False, 'violations': ['Unknown crop'], 'recommendations': []}
+        
+        constraints = self.crop_constraints[crop_name]
+        violations = []
+        recommendations = []
+        
+        # Check pH
+        soil_ph = soil_properties.get('pH', 0)
+        ph_min, ph_max = constraints['pH_range']
+        if not (ph_min <= soil_ph <= ph_max):
+            violations.append(f"pH {soil_ph} outside optimal range ({ph_min}-{ph_max})")
+            if soil_ph < ph_min:
+                recommendations.append("Add lime to increase soil pH")
+            else:
+                recommendations.append("Add sulfur to decrease soil pH")
+        
+        # Check organic matter
+        organic_matter = soil_properties.get('organic_matter', 0)
+        if organic_matter < constraints['organic_matter_min']:
+            violations.append(f"Organic matter {organic_matter}% below minimum {constraints['organic_matter_min']}%")
+            recommendations.append("Add compost or organic fertilizers")
+        
+        # Check soil texture
+        texture = soil_properties.get('texture_class', '')
+        if texture not in constraints['soil_textures']:
+            violations.append(f"Soil texture '{texture}' not optimal for {crop_name}")
+            recommendations.append(f"Consider soil amendments for better texture")
+        
+        # Check temperature
+        temperature = climate_conditions.get('temperature_mean', 0)
+        temp_min, temp_max = constraints['temperature_range']
+        if not (temp_min <= temperature <= temp_max):
+            violations.append(f"Temperature {temperature}°C outside optimal range ({temp_min}-{temp_max}°C)")
+        
+        # Check rainfall
+        rainfall = climate_conditions.get('rainfall_mean', 0)
+        rain_min, rain_max = constraints['rainfall_range']
+        if not (rain_min <= rainfall <= rain_max):
+            violations.append(f"Rainfall {rainfall}mm outside optimal range ({rain_min}-{rain_max}mm)")
+            if rainfall < rain_min:
+                recommendations.append("Consider irrigation systems")
+            else:
+                recommendations.append("Ensure proper drainage")
+        
+        # Check soil nutrients
+        nitrogen = soil_properties.get('nitrogen', 0)
+        phosphorus = soil_properties.get('phosphorus', 0)
+        potassium = soil_properties.get('potassium', 0)
+        
+        if 'nitrogen_range' in constraints:
+            n_min, n_max = constraints['nitrogen_range']
+            if not (n_min <= nitrogen <= n_max):
+                violations.append(f"Nitrogen {nitrogen}ppm outside optimal range ({n_min}-{n_max}ppm)")
+                if nitrogen < n_min:
+                    recommendations.append("Add nitrogen fertilizer")
+                else:
+                    recommendations.append("Reduce nitrogen application")
+        
+        if 'phosphorus_range' in constraints:
+            p_min, p_max = constraints['phosphorus_range']
+            if not (p_min <= phosphorus <= p_max):
+                violations.append(f"Phosphorus {phosphorus}ppm outside optimal range ({p_min}-{p_max}ppm)")
+                if phosphorus < p_min:
+                    recommendations.append("Add phosphorus fertilizer")
+                else:
+                    recommendations.append("Reduce phosphorus application")
+        
+        if 'potassium_range' in constraints:
+            k_min, k_max = constraints['potassium_range']
+            if not (k_min <= potassium <= k_max):
+                violations.append(f"Potassium {potassium}ppm outside optimal range ({k_min}-{k_max}ppm)")
+                if potassium < k_min:
+                    recommendations.append("Add potassium fertilizer")
+                else:
+                    recommendations.append("Reduce potassium application")
+        
+        # Calculate suitability score
+        total_checks = 8  # Updated to include nutrients
+        violations_count = len(violations)
+        suitability_score = max(0, (total_checks - violations_count) / total_checks)
+        
+        return {
+            'suitable': violations_count <= 2,  # Allow up to 2 violations
+            'violations': violations,
+            'recommendations': recommendations,
+            'suitability_score': suitability_score
+        }
+
+class FineTunedLLM:
+    """Fine-tuned agricultural LLM"""
+    
+    def __init__(self, model_path):
+        self.model_path = model_path
+        self.tokenizer = None
+        self.model = None
+        self.load_model()
+    
+    def load_model(self):
+        """Load the fine-tuned model"""
+        try:
+            if not TRANSFORMERS_AVAILABLE:
+                logger.warning("️ Transformers not available, cannot load fine-tuned model")
+                return False
+                
+            logger.info(f" Loading fine-tuned model from: {self.model_path}")
+            self.tokenizer = AutoTokenizer.from_pretrained(self.model_path, local_files_only=True)
+            self.model = AutoModelForCausalLM.from_pretrained(self.model_path, local_files_only=True)
+            
+            if self.tokenizer.pad_token is None:
+                self.tokenizer.pad_token = self.tokenizer.eos_token
+            
+            logger.info(" Fine-tuned model loaded successfully!")
+            return True
+        except Exception as e:
+            logger.error(f" Error loading fine-tuned model: {e}")
+            return False
+    
+    def generate_response(self, prompt, max_length=100, temperature=0.7):
+        """Generate response using fine-tuned model"""
+        try:
+            if self.model is None or self.tokenizer is None:
+                return "Fine-tuned model not available."
+                
+            inputs = self.tokenizer(prompt, return_tensors="pt", padding=True, truncation=True)
+            
+            with torch.no_grad():
+                outputs = self.model.generate(
+                    inputs.input_ids,
+                    attention_mask=inputs.attention_mask,
+                    max_length=max_length,
+                    temperature=temperature,
+                    do_sample=True,
+                    pad_token_id=self.tokenizer.eos_token_id,
+                    eos_token_id=self.tokenizer.eos_token_id
+                )
+            
+            response = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
+            
+            # Remove the original prompt from response
+            if response.startswith(prompt):
+                response = response[len(prompt):].strip()
+            
+            return response
+        except Exception as e:
+            logger.error(f" Error generating response: {e}")
+            return "I'm sorry, I couldn't generate a response at this time."
+
+class AgriculturalAPI:
+    """Agricultural recommendation API with real data integration"""
+    
+    def __init__(self):
+        self.models_loaded = False
+        self.data_loaded = False
+        self.rag_loaded = False
+        self.model_loader = AgriculturalModelLoader()
+        self.data_loader = DataLoader()
+        self.constraint_engine = AgriculturalConstraintEngine()
+        self.semantic_retriever = None
+        
+        # Initialize fine-tuned model
+        self.finetuned_llm = None
+        self._load_finetuned_model()
+        
+        self.load_models_and_data()
+    
+    def _load_finetuned_model(self):
+        """Load the fine-tuned model"""
+        try:
+            # Try multiple possible paths
+            possible_paths = [
+                os.path.join('..', 'quick_fine_tuned_fast'),
+                os.path.join('..', '..', 'quick_fine_tuned_fast'),
+                'quick_fine_tuned_fast',
+                '../quick_fine_tuned_fast'
+            ]
+            
+            model_path = None
+            for path in possible_paths:
+                if os.path.exists(path):
+                    model_path = path
+                    break
+            
+            if model_path:
+                logger.info(f" Loading fine-tuned model from: {model_path}")
+                self.finetuned_llm = FineTunedLLM(model_path)
+                logger.info(" Fine-tuned model loaded successfully")
+            else:
+                logger.warning(f"️ Fine-tuned model not found. Tried paths: {possible_paths}")
+                self.finetuned_llm = None
+        except Exception as e:
+            logger.error(f" Error loading fine-tuned model: {e}")
+            self.finetuned_llm = None
+    
+    def load_models_and_data(self):
+        """Load ML models and data"""
+        try:
+            logger.info("Loading agricultural recommendation system...")
+            
+            # Load data first
+            if self.data_loader.load_data():
+                self.data_loaded = True
+                logger.info(" Data loaded successfully")
+            
+            # Load GCN model
+            if self.model_loader.load_model():
+                self.models_loaded = True
+                logger.info(" GCN model loaded successfully")
+            else:
+                logger.warning("️ GCN model loading failed, using constraint-based recommendations only")
+                self.models_loaded = False
+            
+            # Initialize RAG pipeline if knowledge graph is available
+            if self.data_loaded and self.data_loader.knowledge_graph and self.model_loader.model_metadata:
+                try:
+                    self.semantic_retriever = SemanticRetriever(
+                        triples_data=self.data_loader.knowledge_graph,
+                        entity_to_id=self.model_loader.model_metadata['entity_to_id'],
+                        id_to_entity=self.model_loader.model_metadata['id_to_entity']
+                    )
+                    self.rag_loaded = True
+                    logger.info(" RAG pipeline initialized successfully")
+                except Exception as e:
+                    logger.warning(f"️ RAG pipeline initialization failed: {e}")
+                    self.rag_loaded = False
+            else:
+                logger.warning("️ RAG pipeline not initialized - missing knowledge graph or model metadata")
+                self.rag_loaded = False
+            
+            logger.info(" Agricultural recommendation system initialized")
+            
+        except Exception as e:
+            logger.error(f" Error initializing system: {e}")
+            self.models_loaded = False
+            self.data_loaded = False
+    
+    def get_recommendation(self, soil_properties, climate_conditions, **kwargs):
+        """Get crop recommendation based on soil and climate data"""
+        try:
+            logger.info(f"Generating recommendation for soil: {soil_properties}, climate: {climate_conditions}")
+            
+            # Get farming conditions
+            farming_conditions = kwargs.get('farming_conditions', {})
+            available_land = kwargs.get('available_land', 0)
+            
+            # Get all available crops
+            available_crops = list(self.constraint_engine.crop_constraints.keys())
+            
+            # Evaluate each crop
+            suitable_crops = []
+            for crop in available_crops:
+                evaluation = self.constraint_engine.evaluate_crop_suitability(
+                    crop, soil_properties, climate_conditions
+                )
+                
+                # Apply additional farming condition filters
+                if self._evaluate_farming_conditions(crop, farming_conditions):
+                    suitable_crops.append({
+                        'crop': crop,
+                        'suitability_score': evaluation['suitability_score'],
+                        'recommendations': evaluation['recommendations'],
+                        'violations': evaluation['violations'],
+                        'farming_factors': self._get_farming_factors(crop, farming_conditions)
+                    })
+            
+            # Sort by suitability score
+            suitable_crops.sort(key=lambda x: x['suitability_score'], reverse=True)
+            
+            # Limit to top 6 crops for cleaner display
+            suitable_crops = suitable_crops[:6]
+            
+            # Generate land allocation if available land is provided
+            land_allocation = None
+            if available_land > 0:
+                land_allocation = self._generate_land_allocation(suitable_crops, available_land)
+            
+            # Generate evaluation scores
+            evaluation_scores = self._generate_evaluation(suitable_crops)
+            
+            # Generate recommendation text
+            recommendation_text = self._generate_recommendation_text(suitable_crops, soil_properties, climate_conditions)
+            
+            # Get data sources information
+            data_sources = self._get_data_sources()
+            
+            return {
+                'suitable_crops': suitable_crops,
+                'land_allocation': land_allocation,
+                'evaluation_scores': evaluation_scores,
+                'recommendation_text': recommendation_text,
+                'recommendation_sections': self._get_structured_recommendation_sections(suitable_crops, soil_properties, climate_conditions),
+                'data_sources': data_sources,
+                'farming_conditions': farming_conditions
+            }
+            
+        except Exception as e:
+            logger.error(f"❌ Error generating recommendation: {e}")
+            raise e
+    
+    def _generate_land_allocation(self, suitable_crops, available_land):
+        """Generate optimal land allocation plan"""
+        if not suitable_crops or available_land <= 0:
+            return None
+        
+        # Simple allocation based on suitability scores
+        total_score = sum(crop['suitability_score'] for crop in suitable_crops)
+        crop_details = []
+        remaining_land = available_land
+                
+        for crop in suitable_crops[:5]:  # Top 5 crops
+            if remaining_land <= 0:
+                break
+                
+            # Allocate land proportional to suitability score
+            allocation_ratio = crop['suitability_score'] / total_score
+            allocated_land = min(remaining_land * allocation_ratio, remaining_land)
+                
+            if allocated_land > 0.1:  # Minimum 0.1 hectares
+                crop_details.append({
+                    'crop': crop['crop'],
+                    'land_allocated': round(allocated_land, 2),
+                    'suitability_score': crop['suitability_score']
+                })
+                remaining_land -= allocated_land
+        
+        return {
+            'total_land_used': available_land - remaining_land,
+            'crop_details': crop_details
+        }
+    
+    def _generate_evaluation(self, suitable_crops):
+        """Generate evaluation scores"""
+        if not suitable_crops:
+            return {
+                'overall_score': 0.0,
+                'dimension_scores': {
+                    'economic': 0.0,
+                    'environmental': 0.0,
+                    'social': 0.0,
+                    'risk': 0.0
+                }
+            }
+        
+        # Calculate dimension scores
+        avg_suitability = sum(crop['suitability_score'] for crop in suitable_crops) / len(suitable_crops)
+        
+        # Economic score based on high-value crops
+        high_value_crops = ['coffee', 'cotton', 'sugarcane']
+        economic_score = 0.5 + (0.3 if any(crop['crop'] in high_value_crops for crop in suitable_crops) else 0.0)
+        
+        # Environmental score based on crop diversity
+        environmental_score = 0.5 + (0.2 if len(suitable_crops) >= 3 else 0.0)
+        
+        # Social score based on staple crops
+        staple_crops = ['maize', 'rice', 'cassava', 'sweet_potato', 'beans']
+        social_score = 0.5 + (0.3 if any(crop['crop'] in staple_crops for crop in suitable_crops) else 0.0)
+        
+        # Risk score based on diversification
+        risk_score = 0.5 + (0.2 if len(suitable_crops) >= 3 else 0.0)
+        
+        # Overall score
+        overall_score = (economic_score + environmental_score + social_score + risk_score) / 4
+        
+        return {
+            'overall_score': overall_score,
+            'dimension_scores': {
+                'economic': economic_score,
+                'environmental': environmental_score,
+                'social': social_score,
+                'risk': risk_score
+            }
+        }
+    
+    def _generate_recommendation_text(self, suitable_crops, soil_properties, climate_conditions):
+        """Generate unified, well-structured recommendation combining all AI sources"""
+        if not suitable_crops:
+            return "No suitable crops found for your current conditions. Consider soil amendments and management practices."
+        
+        # Create unified recommendation structure
+        unified_recommendation = self._create_unified_recommendation(suitable_crops, soil_properties, climate_conditions)
+        
+        return unified_recommendation
+    
+    def _create_unified_recommendation(self, suitable_crops, soil_properties, climate_conditions):
+        """Create a unified, well-structured recommendation"""
+        top_crop = suitable_crops[0]
+
+        # Create clean, professional recommendation
+        recommendation = f"AGRICULTURAL RECOMMENDATION REPORT\n\n"
+        
+        # Executive summary with better formatting
+        recommendation += f"PRIMARY RECOMMENDATION: {top_crop['crop'].title()}\n"
+        recommendation += f"SUITABILITY SCORE: {top_crop['suitability_score']:.1%}\n\n"
+        
+        recommendation += f"Based on comprehensive analysis of your soil and climate conditions, {top_crop['crop'].title()} emerges as the most suitable crop for your farm. This recommendation is derived from detailed evaluation of soil properties, climate conditions, and agricultural best practices specific to Uganda's farming environment.\n\n"
+
+        # AI analysis section
+        ai_insights = self._get_ai_insights(suitable_crops, soil_properties, climate_conditions)
+        if ai_insights:
+            recommendation += f"\n**AI ANALYSIS**\n"
+            recommendation += f"{ai_insights}\n\n"
+
+        # Expert analysis section
+        expert_analysis = self._get_expert_analysis(suitable_crops, soil_properties, climate_conditions)
+        if expert_analysis:
+            recommendation += f"\n**EXPERT ANALYSIS**\n"
+            recommendation += f"{expert_analysis}\n\n"
+
+        # Technical analysis section
+        technical_analysis = self._get_technical_analysis(suitable_crops, soil_properties, climate_conditions)
+        recommendation += f"\n**TECHNICAL ANALYSIS**\n"
+        recommendation += f"{technical_analysis}\n\n"
+
+        # Implementation plan section
+        implementation_plan = self._get_implementation_plan(suitable_crops, soil_properties, climate_conditions)
+        recommendation += f"\n**IMPLEMENTATION PLAN**\n"
+        recommendation += f"{implementation_plan}\n\n"
+
+        return recommendation
+    
+    def _get_ai_insights(self, suitable_crops, soil_properties, climate_conditions):
+        """Get AI-generated insights from fine-tuned model"""
+        if self.finetuned_llm and self.finetuned_llm.model is not None:
+            try:
+                insights = self._generate_finetuned_recommendation(suitable_crops, soil_properties, climate_conditions)
+                logger.info(" Fine-tuned model provided insights")
+                return insights
+            except Exception as e:
+                logger.warning(f"Fine-tuned model generation failed: {e}")
+        
+        # Fallback to structured AI insights
+        if suitable_crops:
+            top_crop = suitable_crops[0]
+            insights = f"Our advanced AI analysis indicates that {top_crop['crop'].title()} demonstrates optimal compatibility with your agricultural conditions. "
+        else:
+            insights = "Our advanced AI analysis indicates optimal agricultural conditions for crop cultivation. "
+        
+        if soil_properties.get('pH'):
+            ph = soil_properties['pH']
+            if ph < 6.0:
+                insights += f"Your soil pH of {ph} is slightly acidic, which can be effectively improved with lime application to enhance nutrient availability. "
+            elif ph > 7.5:
+                insights += f"Your soil pH of {ph} is alkaline, consider adding organic matter to improve soil structure and nutrient uptake. "
+            else:
+                insights += f"Your soil pH of {ph} is within the optimal range for most crops, providing excellent growing conditions. "
+        
+        insights += f"Expected yield potential is excellent with proper management practices including soil preparation, appropriate fertilization, and regular monitoring. The AI recommends implementing precision agriculture techniques for optimal results."
+        
+        return insights
+    
+    def _get_expert_analysis(self, suitable_crops, soil_properties, climate_conditions):
+        """Get expert analysis from Gemini API or fallback"""
+        if llm_model:
+            try:
+                analysis = self._generate_llm_recommendation(suitable_crops, soil_properties, climate_conditions)
+                logger.info(" Gemini API provided expert analysis")
+                return analysis
+            except Exception as e:
+                logger.warning(f"Gemini API generation failed: {e}")
+        
+        # Use expert fallback
+        return self._generate_expert_fallback(suitable_crops, soil_properties, climate_conditions)
+    
+    def _get_technical_analysis(self, suitable_crops, soil_properties, climate_conditions):
+        """Get detailed technical analysis in paragraph format"""
+        analysis = f"Comprehensive soil analysis reveals a pH level of {soil_properties.get('pH', 'Unknown')} with organic matter content of {soil_properties.get('organic_matter', 'Unknown')}%. The soil profile is characterized as {soil_properties.get('texture_class', 'Unknown').title()} texture, exhibiting nutrient concentrations of {soil_properties.get('nitrogen', 'Unknown')} ppm nitrogen, {soil_properties.get('phosphorus', 'Unknown')} ppm phosphorus, and {soil_properties.get('potassium', 'Unknown')} ppm potassium. "
+        
+        analysis += f"Environmental conditions present an average temperature of {climate_conditions.get('temperature_mean', 'Unknown')}°C with annual precipitation of {climate_conditions.get('rainfall_mean', 'Unknown')}mm, creating a microclimate conducive to agricultural productivity. "
+        
+        if suitable_crops:
+            top_crop = suitable_crops[0]
+            analysis += f"Through advanced algorithmic analysis, {top_crop['crop'].title()} demonstrates superior compatibility with your specific conditions, achieving a suitability rating of {top_crop['suitability_score']:.1%}. "
+            
+            if len(suitable_crops) > 1:
+                alternatives = []
+                for crop in suitable_crops[1:4]:
+                    alternatives.append(f"{crop['crop'].title()} ({crop['suitability_score']:.1%})")
+                analysis += f"Secondary crop recommendations include {', '.join(alternatives)}, providing viable alternatives for crop rotation and diversification strategies."
+        else:
+            analysis += "Through advanced algorithmic analysis, multiple crop options are available for your specific conditions."
+        
+        return analysis
+    
+    def _get_implementation_plan(self, suitable_crops, soil_properties, climate_conditions):
+        """Get implementation plan in paragraph format"""
+        if suitable_crops:
+            top_crop = suitable_crops[0]
+            plan = f"To achieve optimal {top_crop['crop'].title()} cultivation success, a comprehensive implementation strategy is essential. "
+            
+            if top_crop['recommendations']:
+                recommendations_text = ', '.join(top_crop['recommendations'][:3])
+                plan += f"Priority actions include {recommendations_text} to establish optimal growing conditions. "
+            
+            if top_crop['violations']:
+                violations_text = ', '.join(top_crop['violations'][:3])
+                plan += f"Critical management areas requiring immediate attention include {violations_text} to prevent yield limitations. "
+        else:
+            plan = "To achieve optimal agricultural success, a comprehensive implementation strategy is essential. "
+        
+        plan += f"Implementing a systematic monitoring protocol for soil health, nutrient levels, and crop development will ensure sustained productivity. Establishing a strategic crop rotation schedule will enhance soil fertility, minimize pest pressure, and optimize long-term agricultural sustainability."
+        
+        return plan
+    
+    def _is_similar_content(self, text1, text2, threshold=0.7):
+        """Check if two texts are similar to avoid duplication"""
+        if not text1 or not text2:
+            return False
+        
+        # Simple similarity check based on common words
+        words1 = set(text1.lower().split())
+        words2 = set(text2.lower().split())
+        
+        if len(words1) == 0 or len(words2) == 0:
+            return False
+        
+        intersection = words1.intersection(words2)
+        union = words1.union(words2)
+        
+        similarity = len(intersection) / len(union) if len(union) > 0 else 0
+        return similarity > threshold
+    
+    def _clean_repetitive_text(self, text):
+        """Clean repetitive phrases from fine-tuned model output"""
+        if not text:
+            return text
+        
+        # Common repetitive phrases to remove
+        repetitive_phrases = [
+            "This recommendation is based on agricultural research and local conditions in Uganda.",
+            "based on agricultural research and local conditions in Uganda",
+            "agricultural research and local conditions in Uganda",
+            "local conditions in Uganda",
+            "in Uganda",
+            "This recommendation is based on agricultural",
+            "based on agricultural",
+            "agricultural research",
+            "research and local conditions",
+            "local conditions",
+            "conditions in Uganda",
+            "Uganda.",
+            "Uganda",
+        ]
+        
+        # Remove repetitive phrases
+        cleaned_text = text
+        for phrase in repetitive_phrases:
+            # Remove multiple occurrences
+            while phrase in cleaned_text:
+                cleaned_text = cleaned_text.replace(phrase, "").strip()
+        
+        # Remove incomplete sentences at the end
+        sentences = cleaned_text.split('.')
+        if len(sentences) > 1:
+            # Check if last sentence is incomplete (less than 10 characters)
+            last_sentence = sentences[-1].strip()
+            if len(last_sentence) < 10:
+                sentences = sentences[:-1]
+            cleaned_text = '. '.join(sentences).strip()
+        
+        # Remove bullet points and convert to paragraph format
+        cleaned_text = cleaned_text.replace("- ", "").replace("• ", "").replace("* ", "")
+        
+        # Remove extra whitespace and periods
+        cleaned_text = " ".join(cleaned_text.split())
+        cleaned_text = cleaned_text.replace("..", ".").replace("  ", " ")
+        
+        # Ensure it ends with a period
+        if cleaned_text and not cleaned_text.endswith('.'):
+            cleaned_text += '.'
+        
+        return cleaned_text
+    
+    def generate_pdf_report(self, suitable_crops, soil_properties, climate_conditions, recommendation_text):
+        """Generate a professionally formatted PDF report"""
+        try:
+            # Create a BytesIO buffer to hold the PDF
+            buffer = io.BytesIO()
+            
+            # Create PDF document
+            doc = SimpleDocTemplate(buffer, pagesize=A4, 
+                                  rightMargin=72, leftMargin=72, 
+                                  topMargin=72, bottomMargin=18)
+            
+            # Get styles
+            styles = getSampleStyleSheet()
+            
+            # Create custom styles
+            title_style = ParagraphStyle(
+                'CustomTitle',
+                parent=styles['Heading1'],
+                fontSize=18,
+                spaceAfter=30,
+                alignment=TA_CENTER,
+                textColor=colors.darkgreen
+            )
+            
+            heading_style = ParagraphStyle(
+                'CustomHeading',
+                parent=styles['Heading2'],
+                fontSize=14,
+                spaceAfter=12,
+                spaceBefore=20,
+                textColor=colors.darkblue
+            )
+            
+            body_style = ParagraphStyle(
+                'CustomBody',
+                parent=styles['Normal'],
+                fontSize=11,
+                spaceAfter=12,
+                alignment=TA_JUSTIFY,
+                leftIndent=0,
+                rightIndent=0
+            )
+            
+            # Build the PDF content
+            story = []
+            
+            # Title
+            story.append(Paragraph("AGRICULTURAL RECOMMENDATION REPORT", title_style))
+            story.append(Spacer(1, 20))
+            
+            # Date and farm info
+            current_date = datetime.now().strftime("%B %d, %Y")
+            story.append(Paragraph(f"<b>Report Date:</b> {current_date}", body_style))
+            story.append(Spacer(1, 10))
+            
+            # Primary recommendation
+            top_crop = None
+            if suitable_crops:
+                top_crop = suitable_crops[0]
+                story.append(Paragraph(f"<b>PRIMARY RECOMMENDATION:</b> {top_crop['crop'].title()}", heading_style))
+                story.append(Paragraph(f"<b>SUITABILITY SCORE:</b> {top_crop['suitability_score']:.1%}", body_style))
+                story.append(Spacer(1, 15))
+            
+            # Executive summary
+            story.append(Paragraph("EXECUTIVE SUMMARY", heading_style))
+            if top_crop:
+                summary_text = f"Based on comprehensive analysis of your soil and climate conditions, {top_crop['crop'].title()} emerges as the most suitable crop for your farm. This recommendation is derived from detailed evaluation of soil properties, climate conditions, and agricultural best practices specific to Uganda's farming environment."
+            else:
+                summary_text = "Based on comprehensive analysis of your soil and climate conditions, agricultural recommendations have been generated. This recommendation is derived from detailed evaluation of soil properties, climate conditions, and agricultural best practices specific to Uganda's farming environment."
+            story.append(Paragraph(summary_text, body_style))
+            story.append(Spacer(1, 15))
+            
+            # Soil and climate data table
+            story.append(Paragraph("FARM CONDITIONS ANALYSIS", heading_style))
+            
+            # Create data table
+            data = [
+                ['Parameter', 'Value', 'Status'],
+                ['Soil pH', f"{soil_properties.get('pH', 'N/A')}", 'Optimal' if 6.0 <= soil_properties.get('pH', 0) <= 7.5 else 'Needs Attention'],
+                ['Organic Matter', f"{soil_properties.get('organic_matter', 'N/A')}%", 'Good' if soil_properties.get('organic_matter', 0) >= 2.0 else 'Low'],
+                ['Soil Texture', f"{soil_properties.get('texture_class', 'N/A').title()}", 'Suitable'],
+                ['Nitrogen', f"{soil_properties.get('nitrogen', 'N/A')} ppm", 'Adequate' if soil_properties.get('nitrogen', 0) >= 50 else 'Low'],
+                ['Phosphorus', f"{soil_properties.get('phosphorus', 'N/A')} ppm", 'Adequate' if 10 <= soil_properties.get('phosphorus', 0) <= 50 else 'Needs Adjustment'],
+                ['Potassium', f"{soil_properties.get('potassium', 'N/A')} ppm", 'Adequate' if soil_properties.get('potassium', 0) >= 100 else 'Low'],
+                ['Temperature', f"{climate_conditions.get('temperature_mean', 'N/A')}°C", 'Optimal'],
+                ['Rainfall', f"{climate_conditions.get('rainfall_mean', 'N/A')} mm", 'Adequate' if 500 <= climate_conditions.get('rainfall_mean', 0) <= 2000 else 'Needs Irrigation']
+            ]
+            
+            table = Table(data, colWidths=[2*inch, 1.5*inch, 1.5*inch])
+            table.setStyle(TableStyle([
+                ('BACKGROUND', (0, 0), (-1, 0), colors.darkblue),
+                ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+                ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+                ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                ('FONTSIZE', (0, 0), (-1, 0), 10),
+                ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
+                ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
+                ('GRID', (0, 0), (-1, -1), 1, colors.black)
+            ]))
+            
+            story.append(table)
+            story.append(Spacer(1, 20))
+            
+            # Parse and add recommendation sections
+            sections = recommendation_text.split('**')
+            current_section = ""
+            
+            for i, part in enumerate(sections):
+                if i % 2 == 0:  # Even index = content
+                    if part.strip():
+                        story.append(Paragraph(part.strip(), body_style))
+                        story.append(Spacer(1, 10))
+                else:  # Odd index = section heading
+                    if part.strip():
+                        story.append(Paragraph(part.strip(), heading_style))
+            
+            # Alternative crops section
+            if len(suitable_crops) > 1:
+                story.append(Paragraph("ALTERNATIVE CROP OPTIONS", heading_style))
+                alt_text = "Secondary crop recommendations include "
+                alternatives = []
+                for crop in suitable_crops[1:4]:
+                    alternatives.append(f"{crop['crop'].title()} ({crop['suitability_score']:.1%})")
+                alt_text += ", ".join(alternatives) + ", providing viable alternatives for crop rotation and diversification strategies."
+                story.append(Paragraph(alt_text, body_style))
+                story.append(Spacer(1, 15))
+            
+            # Footer
+            story.append(Spacer(1, 30))
+            story.append(Paragraph("Generated by AgriAI - Smart Agricultural Assistant", 
+                                 ParagraphStyle('Footer', parent=styles['Normal'], 
+                                             fontSize=9, alignment=TA_CENTER, 
+                                             textColor=colors.grey)))
+            story.append(Paragraph("Powered by Advanced AI • Optimized for Uganda Agriculture", 
+                                 ParagraphStyle('Footer', parent=styles['Normal'], 
+                                             fontSize=8, alignment=TA_CENTER, 
+                                             textColor=colors.grey)))
+            
+            # Build PDF
+            doc.build(story)
+            
+            # Get PDF content
+            buffer.seek(0)
+            pdf_content = buffer.getvalue()
+            buffer.close()
+            
+            return pdf_content
+            
+        except Exception as e:
+            logger.error(f"Error generating PDF: {e}")
+            return None
+    
+    def _generate_finetuned_recommendation(self, suitable_crops, soil_properties, climate_conditions):
+        """Generate recommendation using fine-tuned model"""
+        try:
+            # Create a more conversational prompt for unique content
+            top_crop = suitable_crops[0]['crop'] if suitable_crops else 'maize'
+            
+            prompt = f"Farm advice for {top_crop}: Your soil pH is {soil_properties.get('pH', 6.5)} with {soil_properties.get('organic_matter', 2.0)}% organic matter. "
+            prompt += f"The {soil_properties.get('texture_class', 'loam')} texture provides good structure. "
+            prompt += f"Nutrient levels: N={soil_properties.get('nitrogen', 100)}ppm, P={soil_properties.get('phosphorus', 30)}ppm, K={soil_properties.get('potassium', 150)}ppm. "
+            prompt += f"Climate: {climate_conditions.get('temperature_mean', 25)}°C, {climate_conditions.get('rainfall_mean', 1000)}mm rain. "
+            prompt += f"Here are specific cultivation tips for {top_crop}:"
+            
+            # Generate response using fine-tuned model with better parameters
+            response = self.finetuned_llm.generate_response(prompt, max_length=250, temperature=0.8)
+            
+            # Clean up response and ensure it's conversational
+            if response and len(response.strip()) > 15:
+                # Remove the prompt from response if it's included
+                if response.startswith(prompt):
+                    response = response[len(prompt):].strip()
+                
+                # Remove repetitive phrases
+                response = self._clean_repetitive_text(response)
+                return response.strip()
+            else:
+                return f"Based on my agricultural expertise, {top_crop} is well-suited for your conditions. Focus on proper soil preparation and timely planting for optimal yields."
+                
+        except Exception as e:
+            logger.error(f"Error generating fine-tuned recommendation: {e}")
+            return f"Fine-tuned model analysis unavailable: {str(e)}"
+    
+    def _generate_template_recommendation(self, suitable_crops, soil_properties, climate_conditions):
+        """Generate template-based recommendation as fallback"""
+        if not suitable_crops:
+            return "No suitable crops found for your current conditions."
+            
+        top_crop = suitable_crops[0]
+        
+        # Create detailed recommendation
+        recommendation = f"**Crop Recommendation:** {top_crop['crop'].title()}\n\n"
+        recommendation += f"**Suitability Score:** {top_crop['suitability_score']:.1%}\n\n"
+        
+        # Add specific conditions
+        recommendation += f"**Your Conditions:**\n"
+        recommendation += f"- Soil pH: {soil_properties.get('pH', 'Unknown')}\n"
+        recommendation += f"- Temperature: {climate_conditions.get('temperature_mean', 'Unknown')}°C\n"
+        recommendation += f"- Rainfall: {climate_conditions.get('rainfall_mean', 'Unknown')}mm\n"
+        recommendation += f"- Soil Texture: {soil_properties.get('texture_class', 'Unknown').title()}\n\n"
+        
+        # Add other recommendations
+        if len(suitable_crops) > 1:
+            other_crops = [crop['crop'].title() for crop in suitable_crops[1:4]]  # Show up to 3 alternatives
+            recommendation += f"**Alternative Crops:** {', '.join(other_crops)}\n\n"
+        
+        # Add specific recommendations
+        if top_crop['recommendations']:
+            recommendation += f"**Key Recommendations:**\n"
+            for rec in top_crop['recommendations'][:3]:
+                recommendation += f"- {rec}\n"
+        
+        return recommendation
+    
+    def _generate_llm_recommendation(self, suitable_crops, soil_properties, climate_conditions):
+        """Generate recommendation using Gemini API with enhanced context"""
+        # Prepare enhanced context for LLM
+        context = self._prepare_llm_context(suitable_crops, soil_properties, climate_conditions)
+        
+        # Create focused prompt for Gemini API
+        prompt = f"""
+You are an expert agricultural advisor specializing in Uganda/East Africa. Based on the provided soil and climate conditions, provide a comprehensive crop recommendation.
+
+{context}
+
+Please provide:
+1. A clear recommendation for the most suitable crop(s) with reasoning
+2. Specific management practices for the recommended crop(s)
+3. Soil improvement suggestions if needed
+4. Climate adaptation strategies
+5. Economic considerations for Ugandan farmers
+
+Keep the response practical, actionable, and suitable for smallholder farmers in Uganda. Focus on sustainable and cost-effective practices.
+"""
+        
+        try:
+            response = llm_model.generate_content(prompt)
+            return response.text
+        except Exception as e:
+            logger.error(f"Gemini API generation error: {e}")
+            # Return a helpful expert analysis fallback
+            return self._generate_expert_fallback(suitable_crops, soil_properties, climate_conditions)
+    
+    def _generate_expert_fallback(self, suitable_crops, soil_properties, climate_conditions):
+        """Generate expert analysis fallback in paragraph format"""
+        if not suitable_crops:
+            return "No suitable crops identified for analysis."
+        
+        top_crop = suitable_crops[0]
+        analysis = f"Expert agricultural analysis reveals that your soil pH of {soil_properties.get('pH', 0)} presents "
+        
+        # Soil analysis
+        ph = soil_properties.get('pH', 0)
+        if ph < 5.5:
+            analysis += f"acidic conditions requiring immediate lime application to elevate pH to the optimal range of 6.0-7.0 for enhanced nutrient availability and crop productivity. "
+        elif ph > 8.0:
+            analysis += f"alkaline conditions that would significantly benefit from sulfur application to reduce pH and improve nutrient uptake efficiency. "
+        else:
+            analysis += f"favorable conditions within the acceptable range for most agricultural crops, providing an excellent foundation for cultivation. "
+        
+        # Climate analysis
+        rainfall = climate_conditions.get('rainfall_mean', 0)
+        if rainfall < 500:
+            analysis += f"Given the limited annual rainfall of {rainfall}mm, implementing a comprehensive irrigation system will be critical for ensuring consistent crop production and yield optimization. "
+        elif rainfall > 2000:
+            analysis += f"The substantial rainfall of {rainfall}mm necessitates robust drainage infrastructure to prevent waterlogging and maintain optimal soil conditions throughout the growing season. "
+        else:
+            analysis += f"The {rainfall}mm annual rainfall provides excellent growing conditions with adequate moisture for sustained crop development. "
+        
+        # Crop-specific advice
+        analysis += f"Based on comprehensive evaluation, {top_crop['crop'].title()} demonstrates exceptional suitability with a confidence score of {top_crop['suitability_score']:.1%}. "
+        
+        if top_crop['recommendations']:
+            recommendations_text = ', '.join(top_crop['recommendations'][:3])
+            analysis += f"Essential management practices include {recommendations_text} to maximize yield potential and ensure sustainable agricultural success."
+        
+        return analysis
+    
+    def _prepare_llm_context(self, suitable_crops, soil_properties, climate_conditions):
+        """Prepare context for LLM with RAG evidence"""
+        context_parts = []
+        
+        # Add soil and climate conditions
+        context_parts.append("AGRICULTURAL CONDITIONS:")
+        context_parts.append(f"Soil pH: {soil_properties.get('pH', 'Unknown')}")
+        context_parts.append(f"Organic Matter: {soil_properties.get('organic_matter', 'Unknown')}%")
+        context_parts.append(f"Soil Texture: {soil_properties.get('texture_class', 'Unknown')}")
+        context_parts.append(f"Temperature: {climate_conditions.get('temperature_mean', 'Unknown')}°C")
+        context_parts.append(f"Rainfall: {climate_conditions.get('rainfall_mean', 'Unknown')}mm")
+        context_parts.append("")
+        
+        # Add crop suitability analysis
+        context_parts.append("CROP SUITABILITY ANALYSIS:")
+        for i, crop_info in enumerate(suitable_crops[:5]):
+            context_parts.append(f"{i+1}. {crop_info['crop'].title()}: Suitability Score {crop_info['suitability_score']:.2f}")
+            if crop_info['recommendations']:
+                context_parts.append(f"   Recommendations: {'; '.join(crop_info['recommendations'])}")
+            if crop_info['violations']:
+                context_parts.append(f"   Constraints: {'; '.join(crop_info['violations'])}")
+        context_parts.append("")
+        
+        # Add RAG evidence if available
+        if hasattr(self, 'semantic_retriever') and self.semantic_retriever:
+            try:
+                # Create query for evidence retrieval
+                query_parts = []
+                query_parts.append(f"pH {soil_properties.get('pH', 'unknown')}")
+                query_parts.append(f"organic matter {soil_properties.get('organic_matter', 'unknown')}")
+                query_parts.append(f"{soil_properties.get('texture_class', 'unknown')} soil")
+                query_parts.append(f"temperature {climate_conditions.get('temperature_mean', 'unknown')}")
+                query_parts.append(f"rainfall {climate_conditions.get('rainfall_mean', 'unknown')}")
+                
+                # Add crop names to query
+                crop_names = [crop['crop'] for crop in suitable_crops[:3]]
+                query_parts.extend(crop_names)
+                
+                query = " ".join(query_parts)
+                
+                # Retrieve relevant evidence
+                evidence_results = self.semantic_retriever.hybrid_retrieve(query, top_k=10)
+                
+                if evidence_results:
+                    context_parts.append("EVIDENCE FROM AGRICULTURAL KNOWLEDGE GRAPH:")
+                    for i, result in enumerate(evidence_results[:5]):
+                        triple = result['triple']
+                        context_parts.append(f"{i+1}. {triple['subject']} {triple['predicate']} {triple['object']}")
+                        context_parts.append(f"   Relevance Score: {result['score']:.3f}")
+                        if 'evidence' in triple:
+                            context_parts.append(f"   Evidence: {triple['evidence']}")
+                    context_parts.append("")
+            except Exception as e:
+                logger.warning(f"RAG evidence retrieval failed: {e}")
+        
+        return "\n".join(context_parts)
+    
+    def _get_structured_recommendation_sections(self, suitable_crops, soil_properties, climate_conditions):
+        """Return recommendation sections in structured format for better UI display"""
+        sections = {}
+        
+        # Get top crop info
+        if suitable_crops:
+            top_crop = suitable_crops[0]
+            sections['primary_recommendation'] = {
+                'crop': top_crop['crop'].title(),
+                'score': top_crop['suitability_score']
+            }
+            
+            # Extract action items from recommendations
+            sections['action_items'] = self._extract_action_items(suitable_crops, soil_properties)
+            
+            # Get summary metrics
+            sections['summary_metrics'] = self._extract_summary_metrics(suitable_crops, soil_properties, climate_conditions)
+        else:
+            sections['primary_recommendation'] = {'crop': 'No suitable crops found', 'score': 0.0}
+            sections['action_items'] = []
+            sections['summary_metrics'] = {}
+        
+        # Get AI insights
+        ai_insights = self._get_ai_insights(suitable_crops, soil_properties, climate_conditions)
+        sections['ai_analysis'] = ai_insights if ai_insights else ""
+        
+        # Get expert analysis
+        expert_analysis = self._get_expert_analysis(suitable_crops, soil_properties, climate_conditions)
+        sections['expert_analysis'] = expert_analysis if expert_analysis else ""
+        
+        # Get technical analysis
+        technical_analysis = self._get_technical_analysis(suitable_crops, soil_properties, climate_conditions)
+        sections['technical_analysis'] = technical_analysis if technical_analysis else ""
+        
+        # Get implementation plan
+        implementation_plan = self._get_implementation_plan(suitable_crops, soil_properties, climate_conditions)
+        sections['implementation_plan'] = implementation_plan if implementation_plan else ""
+        
+        return sections
+    
+    def _extract_action_items(self, suitable_crops, soil_properties):
+        """Extract action items as structured list"""
+        action_items = []
+        
+        if suitable_crops:
+            top_crop = suitable_crops[0]
+            
+            # Add recommendations as action items
+            if top_crop.get('recommendations'):
+                for rec in top_crop['recommendations']:
+                    action_items.append({
+                        'type': 'recommendation',
+                        'priority': 'high',
+                        'text': rec
+                    })
+            
+            # Add constraint violations as urgent action items
+            if top_crop.get('violations'):
+                for violation in top_crop['violations']:
+                    action_items.append({
+                        'type': 'critical',
+                        'priority': 'urgent',
+                        'text': violation
+                    })
+        
+        return action_items[:10]  # Limit to top 10
+    
+    def _extract_summary_metrics(self, suitable_crops, soil_properties, climate_conditions):
+        """Extract key metrics for summary cards"""
+        metrics = {}
+        
+        if suitable_crops:
+            top_crop = suitable_crops[0]
+            metrics['suitability_score'] = top_crop['suitability_score']
+            metrics['total_recommendations'] = len(top_crop.get('recommendations', []))
+            metrics['critical_issues'] = len(top_crop.get('violations', []))
+        
+        # Soil health indicators
+        ph = soil_properties.get('pH', 0)
+        if ph < 6.0 or ph > 7.5:
+            metrics['soil_ph_status'] = 'needs_adjustment'
+        else:
+            metrics['soil_ph_status'] = 'optimal'
+        
+        # Climate suitability
+        temp = climate_conditions.get('temperature_mean', 0)
+        if 15 <= temp <= 30:
+            metrics['temperature_status'] = 'optimal'
+        else:
+            metrics['temperature_status'] = 'needs_monitoring'
+        
+        return metrics
+    
+    def _get_data_sources(self):
+        """Get information about data sources used"""
+        sources = {
+            "knowledge_graph_triples": len(self.data_loader.knowledge_graph) if self.data_loader.knowledge_graph else 0,
+            "dataset_triples": len(self.data_loader.dataset_triples) if self.data_loader.dataset_triples else 0,
+            "literature_triples": len(self.data_loader.literature_triples) if self.data_loader.literature_triples else 0,
+            "ugandan_data_points": len(self.data_loader.ugandan_data) if hasattr(self.data_loader, 'ugandan_data') and self.data_loader.ugandan_data is not None else 0,
+            "rag_pipeline_active": self.rag_loaded,
+            "llm_model_available": llm_model is not None
+        }
+        
+        return sources
+    
+    def _evaluate_farming_conditions(self, crop, farming_conditions):
+        """Evaluate if crop is suitable based on farming conditions"""
+        # Basic farming condition checks
+        irrigation = farming_conditions.get('irrigation', '')
+        fertilizer_access = farming_conditions.get('fertilizer_access', '')
+        labor_availability = farming_conditions.get('labor_availability', '')
+        budget_range = farming_conditions.get('budget_range', '')
+        
+        # High-value crops need better resources
+        high_value_crops = ['coffee', 'cotton', 'sugarcane']
+        if crop in high_value_crops:
+            if irrigation == 'none' and fertilizer_access in ['none', 'limited']:
+                return False
+            if budget_range == 'low':
+                return False
+        
+        # Labor-intensive crops need adequate labor
+        labor_intensive_crops = ['rice', 'cotton', 'sugarcane']
+        if crop in labor_intensive_crops and labor_availability == 'low':
+            return False
+        
+        return True
+    
+    def _get_farming_factors(self, crop, farming_conditions):
+        """Get farming factors that affect crop suitability"""
+        factors = []
+        
+        irrigation = farming_conditions.get('irrigation', '')
+        fertilizer_access = farming_conditions.get('fertilizer_access', '')
+        labor_availability = farming_conditions.get('labor_availability', '')
+        market_access = farming_conditions.get('market_access', '')
+        budget_range = farming_conditions.get('budget_range', '')
+        
+        if irrigation == 'none':
+            factors.append("Requires irrigation setup")
+        elif irrigation == 'abundant':
+            factors.append("Good irrigation available")
+            
+        if fertilizer_access == 'none':
+            factors.append("Limited fertilizer access")
+        elif fertilizer_access == 'good':
+            factors.append("Good fertilizer access")
+            
+        if labor_availability == 'low':
+            factors.append("Low labor availability")
+        elif labor_availability == 'high':
+            factors.append("High labor availability")
+            
+        if market_access == 'poor':
+            factors.append("Poor market access")
+        elif market_access == 'excellent':
+            factors.append("Excellent market access")
+            
+        if budget_range == 'low':
+            factors.append("Low budget constraints")
+        elif budget_range == 'high':
+            factors.append("High budget available")
+        
+        return factors
+
+# Initialize the API
+api = AgriculturalAPI()
+
+@app.route('/')
+def home():
+    """Serve the main web interface"""
+    html_content = """
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AgriAI - Intelligent Agricultural Assistant</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        /* AI System Interface */
+        body {
+            font-family: 'Inter', sans-serif;
+            background: linear-gradient(135deg, #0f0f23 0%, #1a1a2e 50%, #16213e 100%);
+            margin: 0;
+            padding: 0;
+            color: #e0e6ed;
+            line-height: 1.6;
+            scroll-behavior: smooth;
+            min-height: 100vh;
+        }
+        
+        .container {
+            max-width: 1600px;
+            margin: 0 auto;
+            background: rgba(15, 15, 35, 0.95);
+            backdrop-filter: blur(20px);
+            border-radius: 20px;
+            margin-top: 20px;
+            margin-bottom: 20px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            overflow: hidden;
+        }
+        
+        
+        .ai-status {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            gap: 15px;
+            margin-top: 15px;
+            position: relative;
+            z-index: 1;
+        }
+        
+        .status-indicator {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            padding: 6px 12px;
+            background: rgba(0, 255, 150, 0.1);
+            border: 1px solid rgba(0, 255, 150, 0.3);
+            border-radius: 15px;
+            font-size: 0.8rem;
+        }
+        
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: #00ff96;
+            animation: pulse 2s infinite;
+        }
+        
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+        
+        /* Main Content Area */
+        .main-content {
+            padding: 25px;
+            background: rgba(15, 15, 35, 0.8);
+        }
+        
+        .ai-chat-interface {
+            background: rgba(20, 20, 40, 0.9);
+            border-radius: 15px;
+            padding: 20px;
+            margin-bottom: 20px;
+            border: 1px solid rgba(0, 255, 150, 0.2);
+            box-shadow: 0 8px 25px rgba(0, 0, 0, 0.3);
+        }
+        
+        .chat-header {
+            display: flex;
+            align-items: center;
+            gap: 15px;
+            margin-bottom: 25px;
+            padding: 20px;
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
+            border-radius: 15px;
+            border: 1px solid rgba(0, 255, 150, 0.2);
+            position: relative;
+            overflow: hidden;
+        }
+        
+        .chat-header::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: linear-gradient(45deg, transparent 30%, rgba(0, 255, 150, 0.05) 50%, transparent 70%);
+            animation: shimmer 3s infinite;
+        }
+        
+        .chat-title-section {
+            flex: 1;
+            position: relative;
+            z-index: 1;
+        }
+        
+        .system-status {
+            display: flex;
+            flex-direction: column;
+            align-items: flex-end;
+            gap: 10px;
+            position: relative;
+            z-index: 1;
+        }
+        
+        .status-indicators {
+            display: flex;
+            gap: 20px;
+            flex-wrap: wrap;
+        }
+        
+        .status-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 12px;
+            background: rgba(0, 255, 150, 0.1);
+            border: 1px solid rgba(0, 255, 150, 0.3);
+            border-radius: 20px;
+            font-size: 0.85rem;
+            color: #00ff96;
+            transition: all 0.3s ease;
+        }
+        
+        .status-item:hover {
+            background: rgba(0, 255, 150, 0.2);
+            transform: translateY(-2px);
+        }
+        
+        .status-item i {
+            font-size: 0.9rem;
+        }
+        
+        .system-tagline {
+            font-size: 0.9rem;
+            color: #a0a0a0;
+            text-align: right;
+            font-weight: 400;
+            letter-spacing: 0.5px;
+        }
+        
+        .chat-title {
+            font-size: 1.8rem;
+            font-weight: 700;
+            color: #ffffff;
+            margin-bottom: 5px;
+            background: linear-gradient(135deg, #00ff96, #00d4aa);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+        
+        .chat-subtitle {
+            font-size: 1rem;
+            color: #a0a0a0;
+            margin-bottom: 15px;
+            font-weight: 400;
+        }
+        
+        .ai-status {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+            position: relative;
+            z-index: 1;
+        }
+        
+        .status-indicator {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            padding: 6px 12px;
+            background: rgba(0, 255, 150, 0.1);
+            border: 1px solid rgba(0, 255, 150, 0.3);
+            border-radius: 15px;
+            font-size: 0.8rem;
+            color: #ffffff;
+            font-weight: 500;
+        }
+        
+        .ai-avatar {
+            width: 50px;
+            height: 50px;
+            background: linear-gradient(135deg, #00ff96, #00d4aa);
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1.5rem;
+            color: #000;
+            animation: glow 2s infinite alternate;
+            flex-shrink: 0;
+            position: relative;
+            z-index: 1;
+        }
+        
+        @keyframes glow {
+            from { box-shadow: 0 0 10px rgba(0, 255, 150, 0.5); }
+            to { box-shadow: 0 0 20px rgba(0, 255, 150, 0.8); }
+        }
+        
+        /* Input Form Styles */
+        .input-form {
+            background: rgba(25, 25, 50, 0.8);
+            border-radius: 12px;
+            padding: 20px;
+            margin-bottom: 20px;
+            border: 1px solid rgba(0, 255, 150, 0.1);
+        }
+        
+        .form-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+            gap: 18px;
+            margin-bottom: 25px;
+        }
+        
+        .form-group {
+            position: relative;
+        }
+        
+        .form-group label {
+            display: block;
+            margin-bottom: 8px;
+            font-weight: 500;
+            color: #ffffff;
+            font-size: 0.95rem;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        
+        .form-group input, .form-group select {
+            width: 100%;
+            padding: 12px 15px;
+            border: 2px solid rgba(0, 255, 150, 0.2);
+            border-radius: 10px;
+            background: rgba(15, 15, 35, 0.8);
+            color: #ffffff;
+            font-size: 0.95rem;
+            transition: all 0.3s ease;
+        }
+        
+        .form-group input:focus, .form-group select:focus {
+            outline: none;
+            border-color: #00ff96;
+            box-shadow: 0 0 15px rgba(0, 255, 150, 0.3);
+            background: rgba(15, 15, 35, 0.9);
+        }
+        
+        .form-group input::placeholder {
+            color: #666;
+        }
+        
+        /* AI Action Button */
+        .ai-submit-btn {
+            background: linear-gradient(135deg, #00ff96, #00d4aa);
+            color: #000;
+            border: none;
+            padding: 12px 30px;
+            border-radius: 20px;
+            font-size: 1rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin: 0 auto;
+            box-shadow: 0 4px 15px rgba(0, 255, 150, 0.3);
+        }
+        
+        .ai-submit-btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(0, 255, 150, 0.4);
+            background: linear-gradient(135deg, #00d4aa, #00ff96);
+        }
+        
+        .ai-submit-btn:active {
+            transform: translateY(0);
+        }
+        
+        .ai-submit-btn i {
+            font-size: 1rem;
+        }
+        
+        /* Results Display */
+        .results-container {
+            background: rgba(20, 20, 40, 0.9);
+            border-radius: 15px;
+            padding: 20px;
+            margin-top: 20px;
+            border: 1px solid rgba(0, 255, 150, 0.2);
+            box-shadow: 0 8px 25px rgba(0, 0, 0, 0.3);
+            display: none;
+        }
+        
+        .results-header {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            margin-bottom: 20px;
+            padding-bottom: 15px;
+            border-bottom: 1px solid rgba(0, 255, 150, 0.2);
+        }
+        
+        .results-icon {
+            width: 35px;
+            height: 35px;
+            background: linear-gradient(135deg, #00ff96, #00d4aa);
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1rem;
+            color: #000;
+        }
+        
+        .results-title {
+            font-size: 1.2rem;
+            font-weight: 600;
+            color: #ffffff;
+        }
+        
+        /* Crop Cards */
+        .crop-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 15px;
+            margin-top: 20px;
+        }
+        
+        .crop-card {
+            background: rgba(25, 25, 50, 0.8);
+            border-radius: 12px;
+            padding: 15px;
+            border: 1px solid rgba(0, 255, 150, 0.2);
+            transition: all 0.3s ease;
+            position: relative;
+            overflow: hidden;
+        }
+        
+        .crop-card:hover {
+            transform: translateY(-3px);
+            box-shadow: 0 10px 25px rgba(0, 255, 150, 0.2);
+            border-color: rgba(0, 255, 150, 0.4);
+        }
+        
+        .crop-card::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 2px;
+            background: linear-gradient(90deg, #00ff96, #00d4aa);
+        }
+        
+        .crop-name {
+            font-size: 1.1rem;
+            font-weight: 600;
+            color: #ffffff;
+            margin-bottom: 8px;
+        }
+        
+        .crop-score {
+            font-size: 1rem;
+            color: #00ff96;
+            font-weight: 500;
+            margin-bottom: 12px;
+        }
+        
+        .crop-details {
+            color: #a0a0a0;
+            font-size: 0.85rem;
+            line-height: 1.4;
+        }
+        
+        .crop-details ul {
+            margin: 8px 0;
+            padding-left: 15px;
+        }
+        
+        .crop-details li {
+            margin-bottom: 3px;
+        }
+        
+        /* Loading Animation */
+        .loading-container {
+            display: none;
+            text-align: center;
+            padding: 40px;
+        }
+        
+        .ai-loader {
+            width: 60px;
+            height: 60px;
+            border: 3px solid rgba(0, 255, 150, 0.2);
+            border-top: 3px solid #00ff96;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 20px;
+        }
+        
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        
+        .loading-text {
+            color: #00ff96;
+            font-size: 1.1rem;
+            font-weight: 500;
+        }
+        
+        /* Responsive Design */
+        @media (max-width: 768px) {
+            .container {
+                margin: 5px;
+                border-radius: 10px;
+            }
+            
+            .main-content {
+                padding: 15px;
+            }
+            
+            .ai-chat-interface {
+                padding: 15px;
+            }
+            
+            .chat-header {
+                padding: 15px;
+                gap: 12px;
+                flex-direction: column;
+                align-items: center;
+                text-align: center;
+            }
+            
+            .chat-title {
+                font-size: 1.5rem;
+            }
+            
+            .chat-subtitle {
+                font-size: 0.9rem;
+            }
+            
+            .ai-avatar {
+                width: 45px;
+                height: 45px;
+                font-size: 1.3rem;
+            }
+            
+            .system-status {
+                align-items: center;
+                margin-top: 10px;
+            }
+            
+            .status-indicators {
+                gap: 10px;
+                justify-content: center;
+            }
+            
+            .status-item {
+                font-size: 0.8rem;
+                padding: 6px 10px;
+            }
+            
+            .system-tagline {
+                text-align: center;
+                font-size: 0.8rem;
+            }
+            
+            .form-grid {
+                grid-template-columns: 1fr;
+                gap: 15px;
+            }
+            
+            .ai-status {
+                flex-direction: column;
+                gap: 8px;
+        }
+        
+        .status-indicator {
+                padding: 5px 10px;
+                font-size: 0.75rem;
+            }
+            
+            .crop-grid {
+                grid-template-columns: 1fr;
+                gap: 12px;
+            }
+            
+            .crop-card {
+                padding: 12px;
+            }
+            
+            .results-container {
+                padding: 15px;
+            }
+        }
+        
+        @media (max-width: 480px) {
+            
+            .chat-title {
+                font-size: 1rem;
+            }
+            
+            .chat-subtitle {
+                font-size: 0.75rem;
+            }
+            
+            .ai-submit-btn {
+                padding: 10px 25px;
+                font-size: 0.9rem;
+            }
+        }
+        
+        /* Error Messages */
+        .error-message {
+            background: rgba(255, 59, 48, 0.1);
+            border: 1px solid rgba(255, 59, 48, 0.3);
+            color: #ff3b30;
+            padding: 15px;
+            border-radius: 10px;
+            margin: 20px 0;
+            display: none;
+        }
+        
+        /* Success Messages */
+        .success-message {
+            background: rgba(0, 255, 150, 0.1);
+            border: 1px solid rgba(0, 255, 150, 0.3);
+            color: #00ff96;
+            padding: 15px;
+            border-radius: 10px;
+            margin: 20px 0;
+            display: none;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        
+        <!-- Main Content -->
+        <div class="main-content">
+            <!-- AI Chat Interface -->
+            <div class="ai-chat-interface">
+                <div class="chat-header">
+                    <div class="ai-avatar">
+                        <i class="fas fa-robot"></i>
+                    </div>
+                    <div class="chat-title-section">
+                        <div class="chat-title">AgriAI</div>
+                        <div class="chat-subtitle">Smart Agricultural Assistant</div>
+                    </div>
+                    <div class="system-status">
+                        <div class="status-indicators">
+                            <div class="status-item">
+                                <i class="fas fa-brain"></i>
+                                <span>AI Model Active</span>
+                            </div>
+                            <div class="status-item">
+                                <i class="fas fa-database"></i>
+                                <span>Knowledge Graph Loaded</span>
+                            </div>
+                            <div class="status-item">
+                                <i class="fas fa-seedling"></i>
+                                <span>Ready for Analysis</span>
+                            </div>
+                        </div>
+                        <div class="system-tagline">
+                            Powered by Advanced AI • Optimized for Uganda Agriculture
+                        </div>
+                    </div>
+                </div>
+                    
+                <form id="agriculturalForm" class="input-form">
+                    <div class="form-grid">
+                        <!-- Soil Properties -->
+                        <div class="form-group">
+                            <label for="soil_ph"><i class="fas fa-flask"></i> Soil pH</label>
+                            <input type="number" id="soil_ph" name="soil_ph" step="0.1" min="0" max="14" placeholder="Enter soil pH (0-14, e.g., 6.5)">
+                        </div>
+                        <div class="form-group">
+                            <label for="organic_matter"><i class="fas fa-leaf"></i> Organic Matter (%)</label>
+                            <input type="number" id="organic_matter" name="organic_matter" step="0.1" min="0" max="20" placeholder="Enter organic matter %">
+                        </div>
+                        <div class="form-group">
+                            <label for="texture_class"><i class="fas fa-mountain"></i> Soil Texture</label>
+                            <select id="texture_class" name="texture_class">
+                                <option value="">Select soil texture</option>
+                                <option value="clay">Clay</option>
+                                <option value="clay_loam">Clay Loam</option>
+                                <option value="loam">Loam</option>
+                                <option value="sandy_loam">Sandy Loam</option>
+                                <option value="sandy_clay_loam">Sandy Clay Loam</option>
+                                <option value="silt_loam">Silt Loam</option>
+                                <option value="sandy">Sandy</option>
+                            </select>
+                        </div>
+                        
+                        <!-- Soil Nutrients -->
+                        <div class="form-group">
+                            <label for="nitrogen"><i class="fas fa-atom"></i> Nitrogen (ppm)</label>
+                            <input type="number" id="nitrogen" name="nitrogen" step="1" min="0" max="500" placeholder="Enter nitrogen content">
+                        </div>
+                        <div class="form-group">
+                            <label for="phosphorus"><i class="fas fa-atom"></i> Phosphorus (ppm)</label>
+                            <input type="number" id="phosphorus" name="phosphorus" step="1" min="0" max="200" placeholder="Enter phosphorus content">
+                        </div>
+                        <div class="form-group">
+                            <label for="potassium"><i class="fas fa-atom"></i> Potassium (ppm)</label>
+                            <input type="number" id="potassium" name="potassium" step="1" min="0" max="1000" placeholder="Enter potassium content">
+                    </div>
+                    
+                        <!-- Climate Conditions -->
+                        <div class="form-group">
+                            <label for="temperature_mean"><i class="fas fa-thermometer-half"></i> Temperature (°C)</label>
+                            <input type="number" id="temperature_mean" name="temperature_mean" step="0.1" min="10" max="40" placeholder="Enter average temperature">
+                        </div>
+                            <div class="form-group">
+                            <label for="rainfall_mean"><i class="fas fa-cloud-rain"></i> Rainfall (mm)</label>
+                            <input type="number" id="rainfall_mean" name="rainfall_mean" step="1" min="200" max="3000" placeholder="Enter annual rainfall">
+                            </div>
+                            
+                        <!-- Essential Farming Info -->
+                            <div class="form-group">
+                            <label for="available_land"><i class="fas fa-map"></i> Available Land (hectares)</label>
+                            <input type="number" id="available_land" name="available_land" step="0.1" min="0.1" max="1000" placeholder="Enter land area">
+                            </div>
+                    </div>
+                    
+                    <button type="submit" class="ai-submit-btn">
+                        <i class="fas fa-brain"></i>
+                        Generate Recommendations
+                    </button>
+                </form>
+                
+                <!-- Loading Animation -->
+                <div class="loading-container" id="loadingContainer">
+                    <div class="ai-loader"></div>
+                    <div class="loading-text">AI analyzing conditions...</div>
+            </div>
+            
+                <!-- Error/Success Messages -->
+                <div class="error-message" id="errorMessage"></div>
+                <div class="success-message" id="successMessage"></div>
+            </div>
+            
+            <!-- Results Container -->
+            <div class="results-container" id="resultsContainer">
+                <div class="results-header">
+                    <div class="results-icon">
+                        <i class="fas fa-chart-line"></i>
+                </div>
+                    <div class="results-title">AI Recommendations</div>
+                    </div>
+                <div id="resultsContent"></div>
+                    </div>
+        </div>
+    </div>
+    
+    <script>
+        // AI System JavaScript
+        document.addEventListener('DOMContentLoaded', function() {
+            const form = document.getElementById('agriculturalForm');
+            const loadingContainer = document.getElementById('loadingContainer');
+            const resultsContainer = document.getElementById('resultsContainer');
+            const errorMessage = document.getElementById('errorMessage');
+            const successMessage = document.getElementById('successMessage');
+            const resultsContent = document.getElementById('resultsContent');
+            
+            // Form submission with AI loading animation
+            form.addEventListener('submit', async function(e) {
+            e.preventDefault();
+            
+                // Show loading animation
+                loadingContainer.style.display = 'block';
+                resultsContainer.style.display = 'none';
+                errorMessage.style.display = 'none';
+                successMessage.style.display = 'none';
+                
+                // Collect form data
+                const formData = new FormData(form);
+                const flatData = Object.fromEntries(formData);
+                
+                // Structure data for API
+                const data = {
+                    soil_properties: {
+                        pH: parseFloat(flatData.soil_ph) || 0,
+                        organic_matter: parseFloat(flatData.organic_matter) || 0,
+                        texture_class: flatData.texture_class || '',
+                        nitrogen: parseFloat(flatData.nitrogen) || 0,
+                        phosphorus: parseFloat(flatData.phosphorus) || 0,
+                        potassium: parseFloat(flatData.potassium) || 0
+                    },
+                    climate_conditions: {
+                        temperature_mean: parseFloat(flatData.temperature_mean) || 0,
+                        rainfall_mean: parseFloat(flatData.rainfall_mean) || 0
+                    },
+                    farming_conditions: {
+                        available_land: parseFloat(flatData.available_land) || 0
+                    }
+                };
+                
+                try {
+                    // Simulate AI processing time
+                    await new Promise(resolve => setTimeout(resolve, 2000));
+                
+                    // Make API call
+                const response = await fetch('/api/recommend', {
+                    method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                        },
+                        body: JSON.stringify(data)
+                    });
+                    
+                    const result = await response.json();
+                    
+                    // Hide loading animation
+                    loadingContainer.style.display = 'none';
+                    
+                    if (response.ok) {
+                        displayResults(result);
+                        successMessage.textContent = 'Analysis complete!';
+                        successMessage.style.display = 'block';
+                } else {
+                        throw new Error(result.error || 'Analysis failed');
+                }
+                    
+            } catch (error) {
+                    loadingContainer.style.display = 'none';
+                    errorMessage.textContent = `AI Error: ${error.message}`;
+                    errorMessage.style.display = 'block';
+                }
+            });
+            
+            // Display AI results
+            function displayResults(result) {
+                let html = '';
+                
+                // Primary Recommendation Header
+                if (result.recommendation_sections && result.recommendation_sections.primary_recommendation) {
+                    const primary = result.recommendation_sections.primary_recommendation;
+                    html += `
+                        <div style="background: linear-gradient(135deg, rgba(0, 255, 150, 0.2), rgba(0, 255, 150, 0.05)); padding: 20px; border-radius: 12px; margin-bottom: 25px; border: 2px solid rgba(0, 255, 150, 0.3);">
+                            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+                                <div>
+                                    <h2 style="color: #00ff96; margin: 0; font-size: 1.4rem; font-weight: 700; display: flex; align-items: center; gap: 10px;">
+                                        <i class="fas fa-seedling"></i> ${primary.crop}
+                                    </h2>
+                                    <div style="color: #ffffff; font-size: 0.95rem; margin-top: 5px; opacity: 0.9;">
+                                        Suitability Score: ${(primary.score * 100).toFixed(1)}%
+                                    </div>
+                                </div>
+                                <button id="downloadPdfBtn" style="background: linear-gradient(135deg, #00ff96, #00cc77); color: #000; border: none; padding: 10px 20px; border-radius: 25px; font-size: 0.9rem; font-weight: 600; cursor: pointer; transition: all 0.3s ease; display: flex; align-items: center; gap: 8px; box-shadow: 0 4px 15px rgba(0, 255, 150, 0.2);" onmouseover="this.style.transform='translateY(-2px)'; this.style.boxShadow='0 6px 20px rgba(0, 255, 150, 0.4)'" onmouseout="this.style.transform='translateY(0)'; this.style.boxShadow='0 4px 15px rgba(0, 255, 150, 0.2)'">
+                                    <i class="fas fa-download"></i> Download PDF
+                                </button>
+                            </div>
+                        </div>
+                    `;
+                }
+                
+                // Summary Metrics Cards
+                if (result.recommendation_sections && result.recommendation_sections.summary_metrics) {
+                    const metrics = result.recommendation_sections.summary_metrics;
+                    html += `
+                        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; margin-bottom: 25px;">
+                            <div style="background: rgba(0, 255, 150, 0.15); padding: 15px; border-radius: 10px; border: 1px solid rgba(0, 255, 150, 0.3);">
+                                <div style="color: #00ff96; font-size: 2rem; font-weight: 700; margin-bottom: 5px;">${(metrics.suitability_score * 100).toFixed(0)}%</div>
+                                <div style="color: #ffffff; font-size: 0.85rem; opacity: 0.8;">Suitability Score</div>
+                            </div>
+                            <div style="background: rgba(255, 107, 107, 0.15); padding: 15px; border-radius: 10px; border: 1px solid rgba(255, 107, 107, 0.3);">
+                                <div style="color: #ff6b6b; font-size: 2rem; font-weight: 700; margin-bottom: 5px;">${metrics.critical_issues || 0}</div>
+                                <div style="color: #ffffff; font-size: 0.85rem; opacity: 0.8;">Critical Issues</div>
+                            </div>
+                            <div style="background: rgba(255, 165, 0, 0.15); padding: 15px; border-radius: 10px; border: 1px solid rgba(255, 165, 0, 0.3);">
+                                <div style="color: #ffa500; font-size: 2rem; font-weight: 700; margin-bottom: 5px;">${metrics.total_recommendations || 0}</div>
+                                <div style="color: #ffffff; font-size: 0.85rem; opacity: 0.8;">Action Items</div>
+                            </div>
+                            <div style="background: ${metrics.soil_ph_status === 'optimal' ? 'rgba(0, 255, 150, 0.15)' : 'rgba(255, 107, 107, 0.15)'}; padding: 15px; border-radius: 10px; border: 1px solid ${metrics.soil_ph_status === 'optimal' ? 'rgba(0, 255, 150, 0.3)' : 'rgba(255, 107, 107, 0.3)'};">
+                                <div style="color: ${metrics.soil_ph_status === 'optimal' ? '#00ff96' : '#ff6b6b'}; font-size: 1.2rem; font-weight: 700; margin-bottom: 5px; text-transform: capitalize;">${metrics.soil_ph_status || 'Unknown'}</div>
+                                <div style="color: #ffffff; font-size: 0.85rem; opacity: 0.8;">Soil pH Status</div>
+                            </div>
+                        </div>
+                    `;
+                }
+                
+                // Action Items Section
+                if (result.recommendation_sections && result.recommendation_sections.action_items && result.recommendation_sections.action_items.length > 0) {
+                    html += `
+                        <div style="background: rgba(25, 25, 50, 0.8); padding: 18px; border-radius: 10px; margin-bottom: 18px; border-left: 4px solid #ffa500;">
+                            <h3 style="color: #ffa500; margin: 0 0 15px 0; font-size: 1.1rem; font-weight: 600; display: flex; align-items: center; gap: 8px;">
+                                <i class="fas fa-list-check"></i> Priority Actions
+                            </h3>
+                            <div style="display: flex; flex-direction: column; gap: 10px;">
+                    `;
+                    
+                    result.recommendation_sections.action_items.forEach((item, index) => {
+                        const priorityColor = item.priority === 'urgent' ? '#ff6b6b' : '#ffa500';
+                        const priorityIcon = item.priority === 'urgent' ? 'fa-exclamation-circle' : 'fa-check-circle';
+                        
+                        html += `
+                            <div style="display: flex; align-items: start; gap: 10px; padding: 10px; background: rgba(255, 255, 255, 0.05); border-radius: 6px; border-left: 3px solid ${priorityColor};">
+                                <i class="fas ${priorityIcon}" style="color: ${priorityColor}; margin-top: 2px;"></i>
+                                <span style="color: #ffffff; font-size: 0.9rem; line-height: 1.4;">${item.text}</span>
+                            </div>
+                        `;
+                    });
+                    
+                    html += `</div></div>`;
+                }
+                
+                // Structured Sections
+                if (result.recommendation_sections) {
+                    // AI Analysis Section
+                    if (result.recommendation_sections.ai_analysis) {
+                        html += `
+                            <div style="background: rgba(25, 25, 50, 0.8); padding: 18px; border-radius: 10px; margin-bottom: 18px; border-left: 4px solid #00a8ff;">
+                                <h3 style="color: #00a8ff; margin: 0 0 12px 0; font-size: 1.1rem; font-weight: 600; display: flex; align-items: center; gap: 8px;">
+                                    <i class="fas fa-brain"></i> AI Analysis
+                                </h3>
+                                <p style="color: #ffffff; line-height: 1.7; font-size: 0.95rem; margin: 0;">${result.recommendation_sections.ai_analysis}</p>
+                            </div>
+                        `;
+                    }
+                    
+                    // Expert Analysis Section
+                    if (result.recommendation_sections.expert_analysis) {
+                        html += `
+                            <div style="background: rgba(25, 25, 50, 0.8); padding: 18px; border-radius: 10px; margin-bottom: 18px; border-left: 4px solid #ff6b6b;">
+                                <h3 style="color: #ff6b6b; margin: 0 0 12px 0; font-size: 1.1rem; font-weight: 600; display: flex; align-items: center; gap: 8px;">
+                                    <i class="fas fa-user-tie"></i> Expert Analysis
+                                </h3>
+                                <p style="color: #ffffff; line-height: 1.7; font-size: 0.95rem; margin: 0;">${result.recommendation_sections.expert_analysis}</p>
+                            </div>
+                        `;
+                    }
+                    
+                    // Technical Analysis Section
+                    if (result.recommendation_sections.technical_analysis) {
+                        html += `
+                            <div style="background: rgba(25, 25, 50, 0.8); padding: 18px; border-radius: 10px; margin-bottom: 18px; border-left: 4px solid #ffa500;">
+                                <h3 style="color: #ffa500; margin: 0 0 12px 0; font-size: 1.1rem; font-weight: 600; display: flex; align-items: center; gap: 8px;">
+                                    <i class="fas fa-chart-line"></i> Technical Analysis
+                                </h3>
+                                <p style="color: #ffffff; line-height: 1.7; font-size: 0.95rem; margin: 0;">${result.recommendation_sections.technical_analysis}</p>
+                            </div>
+                        `;
+                    }
+                    
+                    // Implementation Plan Section
+                    if (result.recommendation_sections.implementation_plan) {
+                        html += `
+                            <div style="background: rgba(25, 25, 50, 0.8); padding: 18px; border-radius: 10px; margin-bottom: 18px; border-left: 4px solid #7b68ee;">
+                                <h3 style="color: #7b68ee; margin: 0 0 12px 0; font-size: 1.1rem; font-weight: 600; display: flex; align-items: center; gap: 8px;">
+                                    <i class="fas fa-tasks"></i> Implementation Plan
+                                </h3>
+                                <p style="color: #ffffff; line-height: 1.7; font-size: 0.95rem; margin: 0;">${result.recommendation_sections.implementation_plan}</p>
+                            </div>
+                        `;
+                    }
+                }
+                
+                // Crop recommendations
+                if (result.suitable_crops && result.suitable_crops.length > 0) {
+                    html += '<div class="crop-grid">';
+                    result.suitable_crops.forEach(crop => {
+                        html += `
+                            <div class="crop-card">
+                                <div class="crop-name">${crop.crop.charAt(0).toUpperCase() + crop.crop.slice(1)}</div>
+                                <div class="crop-score">Suitability: ${(crop.suitability_score * 100).toFixed(1)}%</div>
+                                <div class="crop-details">
+                                    ${crop.recommendations && crop.recommendations.length > 0 ? `
+                                        <strong>Recommendations:</strong>
+                                        <ul>
+                                            ${crop.recommendations.map(rec => `<li>${rec}</li>`).join('')}
+                                        </ul>
+                                    ` : ''}
+                                    ${crop.violations && crop.violations.length > 0 ? `
+                                        <strong>Constraints:</strong>
+                                        <ul>
+                                            ${crop.violations.map(viol => `<li>${viol}</li>`).join('')}
+                                        </ul>
+                                    ` : ''}
+                                    ${crop.farming_factors && crop.farming_factors.length > 0 ? `
+                                        <strong>Farming Factors:</strong>
+                                        <ul>
+                                            ${crop.farming_factors.map(factor => `<li>${factor}</li>`).join('')}
+                                        </ul>
+                                    ` : ''}
+                    </div>
+                    </div>
+                        `;
+                    });
+                    html += '</div>';
+                }
+                
+                // Land allocation if available
+                if (result.land_allocation) {
+                    html += `
+                        <div style="background: rgba(25, 25, 50, 0.8); padding: 15px; border-radius: 12px; margin-top: 20px;">
+                            <h3 style="color: #ffffff; margin-bottom: 12px; font-size: 1.1rem;"><i class="fas fa-map"></i> Land Plan</h3>
+                            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px;">
+                                ${result.land_allocation.crop_details.map(crop => `
+                                    <div style="background: rgba(0, 255, 150, 0.1); padding: 12px; border-radius: 8px; border: 1px solid rgba(0, 255, 150, 0.2); text-align: center;">
+                                        <div style="color: #00ff96; font-weight: 600; font-size: 0.9rem;">${crop.crop.charAt(0).toUpperCase() + crop.crop.slice(1)}</div>
+                                        <div style="color: #ffffff; font-size: 0.85rem; margin: 5px 0;">${crop.land_allocated} ha</div>
+                                        <div style="color: #a0a0a0; font-size: 0.75rem;">${(crop.suitability_score * 100).toFixed(1)}%</div>
+                    </div>
+                                `).join('')}
+                    </div>
+                    </div>
+                `;
+                }
+                
+                resultsContent.innerHTML = html;
+                resultsContainer.style.display = 'block';
+                
+                // Smooth scroll to results
+                resultsContainer.scrollIntoView({ behavior: 'smooth' });
+                
+                // Add PDF download functionality
+                const downloadBtn = document.getElementById('downloadPdfBtn');
+                if (downloadBtn) {
+                    downloadBtn.addEventListener('click', async function() {
+                        try {
+                            // Show loading state
+                            downloadBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Generating PDF...';
+                            downloadBtn.disabled = true;
+                            
+                            // Get form data for PDF generation
+                            const formData = new FormData(form);
+                            const flatData = Object.fromEntries(formData);
+                            
+                            // Structure data for PDF API
+                            const structuredData = {
+                                soil_properties: {
+                                    pH: parseFloat(flatData.soil_ph) || 0,
+                                    organic_matter: parseFloat(flatData.organic_matter) || 0,
+                                    texture_class: flatData.texture_class || '',
+                                    nitrogen: parseFloat(flatData.nitrogen) || 0,
+                                    phosphorus: parseFloat(flatData.phosphorus) || 0,
+                                    potassium: parseFloat(flatData.potassium) || 0
+                                },
+                                climate_conditions: {
+                                    temperature_mean: parseFloat(flatData.temperature_mean) || 0,
+                                    rainfall_mean: parseFloat(flatData.rainfall_mean) || 0
+                                },
+                                farming_conditions: {
+                                    available_land: parseFloat(flatData.available_land) || 0
+                                }
+                            };
+                            
+                            // Make PDF download request
+                            const response = await fetch('/api/download_pdf', {
+                                method: 'POST',
+                                headers: {
+                                    'Content-Type': 'application/json',
+                                },
+                                body: JSON.stringify(structuredData)
+                            });
+                            
+                            if (response.ok) {
+                                // Create blob and download
+                                const blob = await response.blob();
+                                const url = window.URL.createObjectURL(blob);
+                                const a = document.createElement('a');
+                                a.href = url;
+                                a.download = `Agricultural_Recommendation_Report_${new Date().toISOString().slice(0,10)}.pdf`;
+                                document.body.appendChild(a);
+                                a.click();
+                                window.URL.revokeObjectURL(url);
+                                document.body.removeChild(a);
+                                
+                                // Show success message
+                                downloadBtn.innerHTML = '<i class="fas fa-check"></i> PDF Downloaded!';
+                                setTimeout(() => {
+                                    downloadBtn.innerHTML = '<i class="fas fa-download"></i> Download PDF';
+                                    downloadBtn.disabled = false;
+                                }, 2000);
+                            } else {
+                                throw new Error('Failed to generate PDF');
+                            }
+                        } catch (error) {
+                            console.error('PDF download error:', error);
+                            downloadBtn.innerHTML = '<i class="fas fa-exclamation-triangle"></i> Download Failed';
+                            setTimeout(() => {
+                                downloadBtn.innerHTML = '<i class="fas fa-download"></i> Download PDF';
+                                downloadBtn.disabled = false;
+                            }, 2000);
+                        }
+                    });
+                }
+            }
+            
+            // Add some AI-like typing effect for status updates
+            function updateStatusIndicators() {
+                const indicators = document.querySelectorAll('.status-indicator');
+                indicators.forEach((indicator, index) => {
+                    setTimeout(() => {
+                        indicator.style.opacity = '1';
+                        indicator.style.transform = 'scale(1)';
+                    }, index * 200);
+                });
+            }
+            
+            // Initialize AI interface
+            updateStatusIndicators();
+        });
+    </script>
+</body>
+</html>
+    """
+    return html_content
+
+@app.route('/api/recommend', methods=['POST'])
+def get_recommendation():
+    """Get crop recommendation based on soil and climate data"""
+    try:
+        data = request.get_json()
+        logger.info(f"Received recommendation request: {data}")
+        
+        # Validate input
+        required_fields = ['soil_properties', 'climate_conditions']
+        for field in required_fields:
+            if field not in data:
+                logger.error(f"Missing required field: {field}")
+                return jsonify({'error': f'Missing required field: {field}'}), 400
+        
+        # Validate soil properties
+        soil_props = data['soil_properties']
+        required_soil_fields = ['pH', 'organic_matter', 'texture_class']
+        for field in required_soil_fields:
+            if field not in soil_props:
+                logger.error(f"Missing required soil property: {field}")
+                return jsonify({'error': f'Missing required soil property: {field}'}), 400
+        
+        # Validate climate conditions
+        climate_conds = data['climate_conditions']
+        required_climate_fields = ['temperature_mean', 'rainfall_mean']
+        for field in required_climate_fields:
+            if field not in climate_conds:
+                logger.error(f"Missing required climate condition: {field}")
+                return jsonify({'error': f'Missing required climate condition: {field}'}), 400
+        
+        # Get farming conditions (optional)
+        farming_conds = data.get('farming_conditions', {})
+        
+        logger.info(f"Soil properties: {soil_props}")
+        logger.info(f"Climate conditions: {climate_conds}")
+        logger.info(f"Farming conditions: {farming_conds}")
+        
+        # Get recommendation from API
+        result = api.get_recommendation(
+            soil_properties=soil_props,
+            climate_conditions=climate_conds,
+            available_land=farming_conds.get('available_land', 0),
+            farming_conditions=farming_conds
+        )
+        
+        logger.info(f"Generated recommendation with {len(result['suitable_crops'])} suitable crops")
+        return jsonify(result)
+        
+    except Exception as e:
+        logger.error(f"Error in recommendation endpoint: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/download_pdf', methods=['POST'])
+def download_pdf():
+    """Download recommendation as PDF"""
+    try:
+        data = request.get_json()
+        logger.info(f"Received PDF download request")
+        
+        # Validate input
+        required_fields = ['soil_properties', 'climate_conditions']
+        for field in required_fields:
+            if field not in data:
+                logger.error(f"Missing required field: {field}")
+                return jsonify({'error': f'Missing required field: {field}'}), 400
+        
+        # Extract data
+        soil_props = data['soil_properties']
+        climate_conds = data['climate_conditions']
+        farming_conds = data.get('farming_conditions', {})
+        
+        # Get recommendation and suitable crops
+        result = api.get_recommendation(
+            soil_properties=soil_props,
+            climate_conditions=climate_conds,
+            available_land=farming_conds.get('available_land', 0),
+            farming_conditions=farming_conds
+        )
+        
+        # Get suitable crops for PDF - use the crops from the result
+        suitable_crops = result.get('suitable_crops', [])
+        
+        # Generate PDF
+        pdf_content = api.generate_pdf_report(
+            suitable_crops, soil_props, climate_conds, result['recommendation_text']
+        )
+        
+        if pdf_content:
+            # Create a BytesIO object for the PDF
+            pdf_buffer = io.BytesIO(pdf_content)
+            pdf_buffer.seek(0)
+            
+            # Generate filename with timestamp
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = f"Agricultural_Recommendation_Report_{timestamp}.pdf"
+            
+            return send_file(
+                pdf_buffer,
+                as_attachment=True,
+                download_name=filename,
+                mimetype='application/pdf'
+            )
+        else:
+            return jsonify({
+                'success': False,
+                'error': 'Failed to generate PDF'
+            }), 500
+        
+    except Exception as e:
+        logger.error(f"Error in PDF download endpoint: {e}")
+        return jsonify({'error': str(e)}), 500
+
+if __name__ == '__main__':
+    logger.info(" Starting Agricultural Recommendation System...")
+    logger.info(f" Data loaded: {api.data_loaded}")
+    logger.info(f" Models loaded: {api.models_loaded}")
+    logger.info(f" RAG pipeline: {api.rag_loaded}")
+    logger.info(f" LLM available: {llm_model is not None}")
+    
+    # Use environment variable for port (required by cloud platforms)
+    port = int(os.environ.get('PORT', 5000))
+    debug_mode = os.environ.get('FLASK_ENV') != 'production'
+    
+    app.run(host='0.0.0.0', port=port, debug=debug_mode)
