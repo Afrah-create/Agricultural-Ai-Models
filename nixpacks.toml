@@ -3,10 +3,11 @@ nixPkgs = ["python311", "gcc", "g++"]
 
 [phases.install]
 cmds = [
-  "cd deployment",
-  "pip install -r requirements.txt"
+  "pip install --upgrade pip",
+  "pip install gunicorn",
+  "pip install -r deployment/requirements.txt"
 ]
 
 [start]
-cmd = "cd deployment && gunicorn app.main:app --bind 0.0.0.0:$PORT --workers 4 --timeout 120"
+cmd = "cd deployment && python app/main.py"
 

@@ -1,10 +1,12 @@
 [build]
 builder = "nixpacks"
+watch = ["deployment/app/**", "deployment/requirements.txt"]
 
 [deploy]
-startCommand = "cd deployment && gunicorn app.main:app --bind 0.0.0.0:$PORT --workers 4"
-watch = ["deployment"]
+startCommand = "cd deployment && python app/main.py"
+watch = ["deployment/app/**"]
 
 [env]
 FLASK_ENV = "production"
+PORT = "5000"
 
