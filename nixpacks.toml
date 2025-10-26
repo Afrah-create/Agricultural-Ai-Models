@@ -1,0 +1,12 @@
+[phases.setup]
+nixPkgs = ["python311", "gcc", "g++"]
+
+[phases.install]
+cmds = [
+  "cd deployment",
+  "pip install -r requirements.txt"
+]
+
+[start]
+cmd = "cd deployment && gunicorn app.main:app --bind 0.0.0.0:$PORT --workers 4 --timeout 120"
+

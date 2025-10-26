@@ -9,6 +9,10 @@
 # Large data files
 *.csv
 *.json
+!railway.json
+!deployment/railway.json
+!package.json
+!tsconfig.json
 *.pkl
 *.pickle
 *.parquet
@@ -55,4 +59,3 @@ Thumbs.db
 # Temporary files
 *.tmp
 *.temp
-
