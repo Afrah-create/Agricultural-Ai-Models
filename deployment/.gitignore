@@ -36,11 +36,16 @@ Thumbs.db
 models/*.pth
 models/*.ckpt
 
+# Fine-tuned model directory (too large)
+quick_fine_tuned_fast/
+
 # Data files (large datasets)
 *.csv
-*.json
 data/
-processed/
+
+# Keep essential JSON files, but exclude large data JSONs
+data/*.json
+processed/*.csv
 
 # Temporary files
 *.tmp

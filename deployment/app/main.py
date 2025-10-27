@@ -117,9 +117,13 @@ app = Flask(__name__)
 class DataLoader:
     """Load and manage agricultural data"""
     
-    def __init__(self, data_dir="../data", processed_dir="../processed"):
-        self.data_dir = data_dir
-        self.processed_dir = processed_dir
+    def __init__(self, data_dir=None, processed_dir=None):
+        # Get absolute paths based on the location of this file
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        parent_dir = os.path.dirname(base_dir)
+        
+        self.data_dir = data_dir or os.path.join(parent_dir, "data")
+        self.processed_dir = processed_dir or os.path.join(parent_dir, "processed")
         self.knowledge_graph = None
         self.dataset_triples = None
         self.literature_triples = None
@@ -204,8 +208,12 @@ class GCNModel(nn.Module):
 class AgriculturalModelLoader:
     """Load and manage the trained GCN model"""
     
-    def __init__(self, models_dir="../processed/trained_models"):
-        self.models_dir = models_dir
+    def __init__(self, models_dir=None):
+        # Get absolute paths based on the location of this file
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        parent_dir = os.path.dirname(base_dir)
+        
+        self.models_dir = models_dir or os.path.join(parent_dir, "processed", "trained_models")
         self.model = None
         self.model_metadata = None
         self.entity_to_id = None
@@ -624,12 +632,15 @@ class AgriculturalAPI:
     def _load_finetuned_model(self):
         """Load the fine-tuned model"""
         try:
-            # Try multiple possible paths
+            # Get absolute paths based on the location of this file
+            base_dir = os.path.dirname(os.path.abspath(__file__))
+            parent_dir = os.path.dirname(base_dir)
+            
+            # Try multiple possible paths with absolute paths
             possible_paths = [
-                os.path.join('..', 'quick_fine_tuned_fast'),
-                os.path.join('..', '..', 'quick_fine_tuned_fast'),
+                os.path.join(parent_dir, 'quick_fine_tuned_fast'),
+                os.path.join(base_dir, 'quick_fine_tuned_fast'),
                 'quick_fine_tuned_fast',
-                '../quick_fine_tuned_fast'
             ]
             
             model_path = None

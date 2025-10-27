@@ -43,7 +43,8 @@ processed/data_cleaning_report.json
 processed/graph_metrics.json
 processed/graph_embedding_results.json
 processed/optimized_graph_embedding_results.json
-processed/unified_knowledge_graph_*.json
+processed/unified_knowledge_graph_analysis.json
+processed/unified_knowledge_graph_schema.json
 processed/trained_models/complete_literature_triples.json
 processed/trained_models/dataset_summary.json
 
