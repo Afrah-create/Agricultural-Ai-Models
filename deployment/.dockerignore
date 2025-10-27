@@ -66,7 +66,6 @@ images/*
 # Exclude deployment scripts not needed in container
 DEPLOY.bat
 download_models.py
-railway.json
 
 # Keep only essential app code
 !.gitignore
