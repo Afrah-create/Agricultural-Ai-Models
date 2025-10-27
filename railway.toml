@@ -8,5 +8,5 @@ watch = ["deployment/app/**"]
 
 [env]
 FLASK_ENV = "production"
-PORT = "5000"
+PORT = "8080"
 
