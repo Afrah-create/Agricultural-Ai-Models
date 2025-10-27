@@ -27,4 +27,4 @@ ENV FLASK_ENV=production
 ENV PYTHONUNBUFFERED=1
 
 # Run the application
-CMD exec gunicorn --bind :$PORT --workers 4 --threads 8 --timeout 120 app.main:app
+CMD exec gunicorn --bind 0.0.0.0:${PORT:-8080} --workers 4 --threads 8 --timeout 120 app.main:app
