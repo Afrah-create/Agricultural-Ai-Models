@@ -29,12 +29,12 @@ README.md
 ARCHITECTURE.md
 CLOUD_DEPLOYMENT_GUIDE.md
 
-# Exclude large data files - keep models
-# Large JSON files
+# Exclude large data files but keep essential ones
 data/dataset_triples.json
 data/unified_knowledge_graph.json
-processed/dataset_triples.json
-processed/unified_knowledge_graph.json
+# Keep processed files that are needed - don't exclude them
+# processed/unified_knowledge_graph.json - DON'T EXCLUDE - NEEDED
+# processed/trained_models/ - DON'T EXCLUDE - NEEDED
 processed/*.csv
 processed/complete_*.json
 processed/literature_analysis.json
@@ -47,14 +47,14 @@ processed/unified_knowledge_graph_*.json
 processed/trained_models/complete_literature_triples.json
 processed/trained_models/dataset_summary.json
 
-# Exclude other model files (keep best_model)
+# Exclude other model files (keep best_model and model_metadata)
 models/complex_model.pth
 models/distmult_model.pth
 models/graphsage_model.pth
 models/transe_model.pth
 models/gcn_model.pth
 
-# Exclude checkpoint directories
+# Keep essential quick_fine_tuned_fast files, only exclude checkpoints
 quick_fine_tuned_fast/checkpoint-*/
 quick_fine_tuned_fast/logs/
 
