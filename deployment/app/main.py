@@ -7,8 +7,10 @@ Modern AI-powered interface for crop recommendations in Uganda
 import os
 import json
 import logging
+import re
 import numpy as np
 import torch
+import torch.nn as nn
 from datetime import datetime
 from flask import Flask, request, jsonify, render_template_string, send_file
 from reportlab.lib.pagesizes import letter, A4
@@ -164,6 +166,41 @@ class DataLoader:
             logger.error(f" Error loading data: {e}")
             return False
 
+class GCNModel(nn.Module):
+    """Graph Convolutional Network for agricultural recommendations"""
+    
+    def __init__(self, num_entities, num_relations, embedding_dim=100):
+        super(GCNModel, self).__init__()
+        self.num_entities = num_entities
+        self.num_relations = num_relations
+        self.embedding_dim = embedding_dim
+        
+        # Entity embeddings
+        self.entity_embeddings = nn.Embedding(num_entities, embedding_dim)
+        
+        # Relation embeddings (required by saved model)
+        self.relation_embeddings = nn.Embedding(num_relations, embedding_dim)
+        
+        # GCN layers with correct names to match saved model
+        self.gcn1 = nn.Linear(embedding_dim, 200)  # First layer: 100 -> 200
+        self.gcn2 = nn.Linear(200, embedding_dim)  # Second layer: 200 -> 100
+        
+        # Dropout
+        self.dropout = nn.Dropout(0.3)
+        
+    def forward(self, entity_ids):
+        # Get entity embeddings
+        x = self.entity_embeddings(entity_ids)
+        
+        # Apply GCN layers with correct names
+        x = torch.relu(self.gcn1(x))
+        x = self.dropout(x)
+        x = torch.relu(self.gcn2(x))
+        x = self.dropout(x)
+        
+        # Return embeddings (no output layer in saved model)
+        return x
+
 class AgriculturalModelLoader:
     """Load and manage the trained GCN model"""
     
@@ -193,7 +230,30 @@ class AgriculturalModelLoader:
                 self.id_to_relation = self.model_metadata.get('id_to_relation', {})
                 
                 logger.info(f" Loaded model metadata: {len(self.entity_to_id)} entities, {len(self.relation_to_id)} relations")
-                return True
+                
+                # Load model weights
+                model_path = os.path.join(self.models_dir, "best_model.pth")
+                if os.path.exists(model_path):
+                    # Create model instance
+                    if self.model_metadata:
+                        self.model = GCNModel(
+                            num_entities=self.model_metadata.get('num_entities', 2513),
+                            num_relations=self.model_metadata.get('num_relations', 15),
+                            embedding_dim=self.model_metadata.get('embedding_dim', 100)
+                        )
+                        
+                        # Load weights
+                        self.model.load_state_dict(torch.load(model_path, map_location='cpu'))
+                        self.model.eval()
+                        logger.info(" GCN model loaded successfully")
+                        logger.info(f"Model parameters: {self.model_metadata.get('num_entities', 2513)} entities, {self.model_metadata.get('num_relations', 15)} relations, {self.model_metadata.get('embedding_dim', 100)} dim")
+                        return True
+                    else:
+                        logger.error(" Model metadata not loaded")
+                        return False
+                else:
+                    logger.warning(f"️ Model file not found at: {model_path}")
+                    return False
             else:
                 logger.warning(f"️ Model metadata not found at {metadata_path}")
                 return False
@@ -481,23 +541,55 @@ class FineTunedLLM:
             logger.error(f" Error loading fine-tuned model: {e}")
             return False
     
-    def generate_response(self, prompt, max_length=100, temperature=0.7):
-        """Generate response using fine-tuned model"""
+    def generate_response(self, prompt, max_length=None, max_new_tokens=None, temperature=0.7, num_beams=1, repetition_penalty=1.0):
+        """Generate response using fine-tuned model with improved parameters"""
         try:
             if self.model is None or self.tokenizer is None:
                 return "Fine-tuned model not available."
-                
+            
+            # Tokenize input
             inputs = self.tokenizer(prompt, return_tensors="pt", padding=True, truncation=True)
             
+            # Move to same device as model
+            device = next(self.model.parameters()).device
+            input_ids = inputs['input_ids'].to(device)
+            attention_mask = inputs['attention_mask'].to(device)
+            
             with torch.no_grad():
+                # Use beam search if num_beams > 1, otherwise use sampling
+                generation_params = {
+                    'pad_token_id': self.tokenizer.eos_token_id,
+                    'eos_token_id': self.tokenizer.eos_token_id,
+                    'repetition_penalty': repetition_penalty,
+                    'no_repeat_ngram_size': 3
+                }
+                
+                # Use max_new_tokens if specified (better for long prompts)
+                if max_new_tokens is not None:
+                    generation_params['max_new_tokens'] = max_new_tokens
+                elif max_length is not None:
+                    generation_params['max_length'] = max_length
+                else:
+                    generation_params['max_new_tokens'] = 100
+                
+                if num_beams > 1:
+                    # Use beam search (deterministic, higher quality)
+                    generation_params.update({
+                        'num_beams': num_beams,
+                        'early_stopping': True,
+                        'do_sample': False
+                    })
+                else:
+                    # Use sampling (for when temperature > 0)
+                    generation_params.update({
+                        'temperature': temperature,
+                        'do_sample': temperature > 0
+                    })
+                
                 outputs = self.model.generate(
-                    inputs.input_ids,
-                    attention_mask=inputs.attention_mask,
-                    max_length=max_length,
-                    temperature=temperature,
-                    do_sample=True,
-                    pad_token_id=self.tokenizer.eos_token_id,
-                    eos_token_id=self.tokenizer.eos_token_id
+                    input_ids,
+                    attention_mask=attention_mask,
+                    **generation_params
                 )
             
             response = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
@@ -1088,35 +1180,117 @@ class AgriculturalAPI:
             return None
     
     def _generate_finetuned_recommendation(self, suitable_crops, soil_properties, climate_conditions):
-        """Generate recommendation using fine-tuned model"""
+        """Generate recommendation using fine-tuned model with RAG integration"""
         try:
-            # Create a more conversational prompt for unique content
+            # Get top crop
             top_crop = suitable_crops[0]['crop'] if suitable_crops else 'maize'
             
-            prompt = f"Farm advice for {top_crop}: Your soil pH is {soil_properties.get('pH', 6.5)} with {soil_properties.get('organic_matter', 2.0)}% organic matter. "
-            prompt += f"The {soil_properties.get('texture_class', 'loam')} texture provides good structure. "
-            prompt += f"Nutrient levels: N={soil_properties.get('nitrogen', 100)}ppm, P={soil_properties.get('phosphorus', 30)}ppm, K={soil_properties.get('potassium', 150)}ppm. "
-            prompt += f"Climate: {climate_conditions.get('temperature_mean', 25)}°C, {climate_conditions.get('rainfall_mean', 1000)}mm rain. "
-            prompt += f"Here are specific cultivation tips for {top_crop}:"
+            # Retrieve RAG evidence from knowledge graph
+            rag_evidence_text = self._get_rag_evidence_for_model(
+                top_crop, soil_properties, climate_conditions, suitable_crops
+            )
             
-            # Generate response using fine-tuned model with better parameters
-            response = self.finetuned_llm.generate_response(prompt, max_length=250, temperature=0.8)
+            # Build structured prompt with RAG evidence
+            prompt = self._build_structured_prompt_with_rag(
+                top_crop, soil_properties, climate_conditions, rag_evidence_text, suitable_crops
+            )
             
-            # Clean up response and ensure it's conversational
+            # Generate response with conservative parameters for better quality
+            response = self.finetuned_llm.generate_response(
+                prompt, 
+                max_new_tokens=120,  # Shorter to avoid repetition
+                temperature=0.3,     # Lower temperature = more factual
+                num_beams=2,          # Smaller beam = faster, still quality
+                repetition_penalty=1.3  # Strong penalty to prevent loops
+            )
+            
+            # Clean up response and validate quality
             if response and len(response.strip()) > 15:
                 # Remove the prompt from response if it's included
-                if response.startswith(prompt):
-                    response = response[len(prompt):].strip()
+                if prompt in response:
+                    response = response.split(prompt, 1)[-1].strip()
                 
                 # Remove repetitive phrases
                 response = self._clean_repetitive_text(response)
-                return response.strip()
-            else:
-                return f"Based on my agricultural expertise, {top_crop} is well-suited for your conditions. Focus on proper soil preparation and timely planting for optimal yields."
+                
+                # Check if response is meaningful (not just random numbers/text)
+                if self._is_meaningful_response(response):
+                    return response.strip()
+            
+            # Fallback to template-based recommendation if model fails
+            return self._get_fallback_llm_recommendation(top_crop, soil_properties, climate_conditions)
                 
         except Exception as e:
             logger.error(f"Error generating fine-tuned recommendation: {e}")
-            return f"Fine-tuned model analysis unavailable: {str(e)}"
+            return self._get_fallback_llm_recommendation(top_crop, soil_properties, climate_conditions)
+    
+    def _is_meaningful_response(self, text):
+        """Check if response is meaningful (not just random numbers or gibberish)"""
+        if not text or len(text) < 20:  # Increased minimum length
+            return False
+        
+        # Check for random numbers like "6. 52008855°C" or "91. 905003745mm"
+        if re.search(r'\d+\.\s*\d{7,}', text):  # Long decimal numbers with spaces
+            return False
+        
+        # Check for too many numbers with decimals (gibberish)
+        words = text.split()
+        decimal_count = sum(1 for w in words if '.' in w and any(c.isdigit() for c in w))
+        if decimal_count > 2:  # More than 2 decimal numbers is suspicious
+            return False
+        
+        # Check for too many consecutive punctuation marks
+        if '..' in text or '...' in text:
+            return False
+        
+        # Check for actual agricultural words
+        agricultural_keywords = ['soil', 'crop', 'plant', 'fertilizer', 'irrigation', 'yield', 
+                                 'cultivation', 'management', 'pH', 'rainfall', 'temperature']
+        text_lower = text.lower()
+        keyword_count = sum(1 for keyword in agricultural_keywords if keyword in text_lower)
+        
+        if keyword_count == 0:  # Must have at least one agricultural keyword
+            return False
+        
+        # Check for actual sentences (must have proper words)
+        has_words = any(len(w) > 2 and w.isalpha() for w in words)
+        if not has_words:
+            return False
+        
+        return True
+    
+    def _get_fallback_llm_recommendation(self, crop_name, soil_properties, climate_conditions):
+        """Fallback recommendation when fine-tuned model fails or produces poor output"""
+        recommendations = []
+        
+        # Add soil-specific advice
+        ph = soil_properties.get('pH', 7)
+        if ph < 6.0:
+            recommendations.append("Apply lime to raise soil pH to optimal range (6.0-7.0)")
+        elif ph > 7.5:
+            recommendations.append("Add organic matter to improve soil structure and fertility")
+        
+        om = soil_properties.get('organic_matter', 2)
+        if om < 2.0:
+            recommendations.append("Incorporate organic matter (compost or manure) to improve soil health")
+        
+        # Add climate-specific advice
+        rainfall = climate_conditions.get('rainfall_mean', 1000)
+        if rainfall < 600:
+            recommendations.append("Implement irrigation system for reliable water supply")
+        elif rainfall > 1500:
+            recommendations.append("Ensure proper drainage to prevent waterlogging")
+        
+        # Add general recommendations
+        recommendations.append(f"Prepare well-drained beds for {crop_name}")
+        recommendations.append("Follow recommended spacing and planting dates for optimal yields")
+        
+        # Build response
+        response = f"For {crop_name.title()} cultivation in Uganda:\n"
+        response += "\n".join(f"• {rec}" for rec in recommendations[:4])
+        response += f"\n\nExpected yield: Good with proper management practices."
+        
+        return response
     
     def _generate_template_recommendation(self, suitable_crops, soil_properties, climate_conditions):
         """Generate template-based recommendation as fallback"""
@@ -1148,6 +1322,72 @@ class AgriculturalAPI:
                 recommendation += f"- {rec}\n"
         
         return recommendation
+    
+    def _get_rag_evidence_for_model(self, crop_name, soil_properties, climate_conditions, suitable_crops):
+        """Retrieve RAG evidence from knowledge graph for fine-tuned model"""
+        rag_evidence_parts = []
+        
+        # Check if semantic retriever is available
+        if hasattr(self, 'semantic_retriever') and self.semantic_retriever:
+            try:
+                # Build query for crop-specific evidence
+                query_parts = [
+                    crop_name,
+                    f"pH {soil_properties.get('pH', 'unknown')}",
+                    f"organic matter {soil_properties.get('organic_matter', 'unknown')}",
+                    f"{soil_properties.get('texture_class', 'unknown')} soil",
+                    f"temperature {climate_conditions.get('temperature_mean', 'unknown')}",
+                    f"rainfall {climate_conditions.get('rainfall_mean', 'unknown')}"
+                ]
+                
+                query = " ".join(query_parts)
+                
+                # Retrieve relevant evidence (only top 2 to keep prompt short)
+                evidence_results = self.semantic_retriever.hybrid_retrieve(query, top_k=2)
+                
+                if evidence_results:
+                    # Format evidence for prompt (keep it concise)
+                    for i, result in enumerate(evidence_results[:2], 1):
+                        triple = result['triple']
+                        if triple and isinstance(triple, dict):
+                            subject = triple.get('subject', '')
+                            predicate = triple.get('predicate', '')
+                            obj = triple.get('object', '')
+                            
+                            if subject and predicate and obj:
+                                # Keep it short: just the triple, no extra evidence
+                                evidence_text = f"{subject} {predicate} {obj}"
+                                rag_evidence_parts.append(evidence_text)
+            except Exception as e:
+                logger.warning(f"RAG evidence retrieval failed: {e}")
+        
+        return "\n".join(rag_evidence_parts) if rag_evidence_parts else ""
+    
+    def _build_structured_prompt_with_rag(self, crop_name, soil_properties, climate_conditions, rag_evidence, suitable_crops):
+        """Build balanced agricultural prompt with RAG evidence"""
+        
+        # Extract key properties
+        ph = soil_properties.get('pH', 'Unknown')
+        texture = soil_properties.get('texture_class', 'Unknown')
+        om = soil_properties.get('organic_matter', 'Unknown')
+        temp = climate_conditions.get('temperature_mean', 'Unknown')
+        rainfall = climate_conditions.get('rainfall_mean', 'Unknown')
+        
+        # Build prompt with better structure
+        prompt_parts = [
+            f"Agricultural advice for {crop_name.title()} in Uganda:",
+            f"Soil: pH {ph}, {texture.title()} with {om}% organic matter",
+            f"Climate: {temp}°C temperature, {rainfall}mm annual rainfall"
+        ]
+        
+        # Add RAG evidence if available
+        if rag_evidence:
+            prompt_parts.append(f"Based on: {rag_evidence}")
+        
+        # Better instruction
+        prompt_parts.append("Provide 3-4 specific cultivation tips (soil prep, planting, management):")
+        
+        return "\n".join(prompt_parts)
     
     def _generate_llm_recommendation(self, suitable_crops, soil_properties, climate_conditions):
         """Generate recommendation using Gemini API with enhanced context"""
@@ -2030,7 +2270,7 @@ def home():
                             </div>
                             <div class="status-item">
                                 <i class="fas fa-database"></i>
-                                <span>Knowledge Graph Loaded</span>
+                                <span>Knowledge Based</span>
                             </div>
                             <div class="status-item">
                                 <i class="fas fa-seedling"></i>
