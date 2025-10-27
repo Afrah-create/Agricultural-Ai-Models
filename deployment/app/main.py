@@ -1687,8 +1687,19 @@ Keep the response practical, actionable, and suitable for smallholder farmers in
         
         return factors
 
-# Initialize the API
-api = AgriculturalAPI()
+# Lazy initialization of API to save memory at startup
+api = None
+
+def get_api():
+    """Lazy initialization of AgriculturalAPI"""
+    global api
+    if api is None:
+        try:
+            api = AgriculturalAPI()
+        except Exception as e:
+            logger.error(f"Failed to initialize API: {e}")
+            api = AgriculturalAPI.__new__(AgriculturalAPI)  # Return empty instance
+    return api
 
 @app.route('/')
 def home():
@@ -2773,7 +2784,8 @@ def get_recommendation():
         logger.info(f"Farming conditions: {farming_conds}")
         
         # Get recommendation from API
-        result = api.get_recommendation(
+        api_instance = get_api()
+        result = api_instance.get_recommendation(
             soil_properties=soil_props,
             climate_conditions=climate_conds,
             available_land=farming_conds.get('available_land', 0),
@@ -2807,7 +2819,8 @@ def download_pdf():
         farming_conds = data.get('farming_conditions', {})
         
         # Get recommendation and suitable crops
-        result = api.get_recommendation(
+        api_instance = get_api()
+        result = api_instance.get_recommendation(
             soil_properties=soil_props,
             climate_conditions=climate_conds,
             available_land=farming_conds.get('available_land', 0),
@@ -2818,7 +2831,7 @@ def download_pdf():
         suitable_crops = result.get('suitable_crops', [])
         
         # Generate PDF
-        pdf_content = api.generate_pdf_report(
+        pdf_content = api_instance.generate_pdf_report(
             suitable_crops, soil_props, climate_conds, result['recommendation_text']
         )
         
@@ -2849,9 +2862,10 @@ def download_pdf():
 
 if __name__ == '__main__':
     logger.info(" Starting Agricultural Recommendation System...")
-    logger.info(f" Data loaded: {api.data_loaded}")
-    logger.info(f" Models loaded: {api.models_loaded}")
-    logger.info(f" RAG pipeline: {api.rag_loaded}")
+    api_instance = get_api()
+    logger.info(f" Data loaded: {api_instance.data_loaded if hasattr(api_instance, 'data_loaded') else 'N/A'}")
+    logger.info(f" Models loaded: {api_instance.models_loaded if hasattr(api_instance, 'models_loaded') else 'N/A'}")
+    logger.info(f" RAG pipeline: {api_instance.rag_loaded if hasattr(api_instance, 'rag_loaded') else 'N/A'}")
     logger.info(f" LLM available: {llm_model is not None}")
     
     # Use environment variable for port (required by cloud platforms)
