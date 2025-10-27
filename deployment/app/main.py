@@ -1687,18 +1687,21 @@ Keep the response practical, actionable, and suitable for smallholder farmers in
         
         return factors
 
-# Lazy initialization of API to save memory at startup
-api = None
+# Initialize the API - this will be shared across all workers
+# Note: We accept that this will use memory, but Railway's restart policy will handle crashes
+try:
+    api = AgriculturalAPI()
+    logger.info(" ✅ AgriculturalAPI initialized successfully")
+except Exception as e:
+    logger.error(f" Failed to initialize AgriculturalAPI: {e}")
+    api = None
 
 def get_api():
-    """Lazy initialization of AgriculturalAPI"""
+    """Get the API instance"""
     global api
     if api is None:
-        try:
-            api = AgriculturalAPI()
-        except Exception as e:
-            logger.error(f"Failed to initialize API: {e}")
-            api = AgriculturalAPI.__new__(AgriculturalAPI)  # Return empty instance
+        logger.error(" ❌ API not initialized")
+        raise RuntimeError("AgriculturalAPI not initialized")
     return api
 
 @app.route('/')
