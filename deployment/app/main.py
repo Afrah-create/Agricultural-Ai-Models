@@ -752,18 +752,48 @@ class AgriculturalAPI:
             logger.info(f" Attempting to enhance {len(suitable_crops)} crops with GCN model")
             logger.info(f" Entity mappings available: {len(entity_to_id)} entities")
             
+            # Sample some entity names to understand the format
+            sample_entities = list(entity_to_id.keys())[:10]
+            logger.info(f" Sample entity names: {sample_entities}")
+            
             for crop in suitable_crops:
                 enhanced_crop = crop.copy()
                 
                 # Try to get entity ID for this crop
                 crop_name = crop['crop'].lower()
                 
-                # Look for crop in entity mappings
+                # Look for crop in entity mappings (flexible matching)
                 crop_id = None
-                for entity, eid in entity_to_id.items():
-                    if crop_name in entity.lower():
-                        crop_id = eid
-                        break
+                crop_entity = None
+                search_variations = [crop_name]
+                
+                # Try exact match first
+                if crop_name in entity_to_id:
+                    crop_id = entity_to_id[crop_name]
+                    crop_entity = crop_name
+                else:
+                    # Try flexible matching with underscore replacement
+                    search_variations = [
+                        crop_name,
+                        crop_name.replace('_', ' '),
+                        crop_name.replace('_', '-'),
+                        crop_name.replace(' ', '_')
+                    ]
+                    
+                    for variation in search_variations:
+                        if variation in entity_to_id:
+                            crop_id = entity_to_id[variation]
+                            crop_entity = variation
+                            break
+                
+                # If still not found, try partial matching
+                if crop_id is None:
+                    for entity, eid in entity_to_id.items():
+                        entity_lower = entity.lower()
+                        if crop_name in entity_lower or entity_lower in crop_name:
+                            crop_id = eid
+                            crop_entity = entity
+                            break
                 
                 if crop_id is not None:
                     try:
@@ -778,12 +808,13 @@ class AgriculturalAPI:
                             normalized_score = min(1.0, embedding_score / 10.0) * 0.1
                             enhanced_crop['suitability_score'] = min(1.0, enhanced_crop['suitability_score'] + normalized_score)
                             enhanced_crop['model_enhanced'] = True
+                            logger.info(f" ✅ Enhanced {crop['crop']} → {crop_entity} (boost: {normalized_score:.4f})")
                     except Exception as e:
                         logger.warning(f" Could not enhance {crop['crop']} with model: {e}")
                         enhanced_crop['model_enhanced'] = False
                 else:
                     enhanced_crop['model_enhanced'] = False
-                    logger.debug(f" Crop {crop['crop']} not found in entity mappings")
+                    logger.debug(f" ❌ Crop '{crop['crop']}' not found in entity mappings (searched: {search_variations})")
                 
                 enhanced_crops.append(enhanced_crop)
             
