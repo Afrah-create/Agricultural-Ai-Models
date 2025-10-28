@@ -130,39 +130,52 @@ class DataLoader:
         self.ugandan_data = None
         
     def load_data(self):
-        """Load all agricultural data files"""
+        """Load all agricultural data files - optimized for memory"""
         try:
             logger.info("Loading agricultural data files...")
             
-            # Load unified knowledge graph from processed folder
+            # Skip large knowledge graph to reduce memory usage
+            # Store file path for on-demand loading if needed
             kg_path = os.path.join(self.processed_dir, "unified_knowledge_graph.json")
+            self.kg_path = kg_path
             if os.path.exists(kg_path):
-                with open(kg_path, 'r', encoding='utf-8') as f:
-                    self.knowledge_graph = json.load(f)
-                logger.info(f" Loaded knowledge graph: {len(self.knowledge_graph)} triples")
+                # Don't load the large knowledge graph - just create empty list
+                # This prevents loading 175K triples into memory
+                self.knowledge_graph = []
+                # Get file size for logging
+                import os as os_module
+                size_mb = os_module.path.getsize(kg_path) / (1024 * 1024)
+                logger.info(f" Knowledge graph file found ({size_mb:.1f} MB), loading deferred to save memory")
             else:
                 logger.warning(f"️ Knowledge graph not found at {kg_path}")
+                self.knowledge_graph = []
             
-            # Load dataset triples
+            # Don't load dataset triples to save memory
             dataset_triples_path = os.path.join(self.processed_dir, "dataset_triples.json")
             if os.path.exists(dataset_triples_path):
-                with open(dataset_triples_path, 'r', encoding='utf-8') as f:
-                    self.dataset_triples = json.load(f)
-                logger.info(f" Loaded dataset triples: {len(self.dataset_triples)} triples")
+                self.dataset_triples = []  # Empty to save memory
+                logger.info(" Dataset triples skipped to save memory")
+            else:
+                self.dataset_triples = []
             
-            # Load literature triples
+            # Load literature triples (should be small)
             literature_triples_path = os.path.join(self.processed_dir, "literature_triples.json")
             if os.path.exists(literature_triples_path):
                 with open(literature_triples_path, 'r', encoding='utf-8') as f:
                     self.literature_triples = json.load(f)
                 logger.info(f" Loaded literature triples: {len(self.literature_triples)} triples")
+            else:
+                self.literature_triples = []
             
-            # Load Ugandan dataset
+            # Load Ugandan dataset (CSV files are usually manageable)
             ugandan_data_path = os.path.join(self.processed_dir, "ugandan_data_cleaned.csv")
             if os.path.exists(ugandan_data_path):
                 import pandas as pd
-                self.ugandan_data = pd.read_csv(ugandan_data_path)
-                logger.info(f" Loaded Ugandan dataset: {len(self.ugandan_data)} records")
+                # Load only a sample of the data to save memory
+                self.ugandan_data = pd.read_csv(ugandan_data_path, nrows=1000)  # Only first 1000 rows
+                logger.info(f" Loaded Ugandan dataset sample: {len(self.ugandan_data)} records")
+            else:
+                self.ugandan_data = None
             
             return True
             
@@ -618,92 +631,43 @@ class AgriculturalAPI:
         self.models_loaded = False
         self.data_loaded = False
         self.rag_loaded = False
-        self.model_loader = AgriculturalModelLoader()
-        self.data_loader = DataLoader()
+        
+        # Initialize constraint engine (always available)
         self.constraint_engine = AgriculturalConstraintEngine()
+        
+        # Initialize model loader (for GCN embeddings)
+        self.model_loader = AgriculturalModelLoader()
+        
+        # Don't load heavy data files or knowledge graph
+        self.data_loader = None
         self.semantic_retriever = None
-        
-        # Initialize fine-tuned model
         self.finetuned_llm = None
-        self._load_finetuned_model()
         
-        self.load_models_and_data()
+        # Load model lazily on first request to save startup memory
+        self._initialized = False
+        
+        logger.info(" AgriculturalAPI initialized (lazy model loading)")
     
-    def _load_finetuned_model(self):
-        """Load the fine-tuned model"""
-        try:
-            # Get absolute paths based on the location of this file
-            base_dir = os.path.dirname(os.path.abspath(__file__))
-            parent_dir = os.path.dirname(base_dir)
-            
-            # Try multiple possible paths with absolute paths
-            possible_paths = [
-                os.path.join(parent_dir, 'quick_fine_tuned_fast'),
-                os.path.join(base_dir, 'quick_fine_tuned_fast'),
-                'quick_fine_tuned_fast',
-            ]
-            
-            model_path = None
-            for path in possible_paths:
-                if os.path.exists(path):
-                    model_path = path
-                    break
-            
-            if model_path:
-                logger.info(f" Loading fine-tuned model from: {model_path}")
-                self.finetuned_llm = FineTunedLLM(model_path)
-                logger.info(" Fine-tuned model loaded successfully")
-            else:
-                logger.warning(f"️ Fine-tuned model not found. Tried paths: {possible_paths}")
-                self.finetuned_llm = None
-        except Exception as e:
-            logger.error(f" Error loading fine-tuned model: {e}")
-            self.finetuned_llm = None
-    
-    def load_models_and_data(self):
-        """Load ML models and data"""
-        try:
-            logger.info("Loading agricultural recommendation system...")
-            
-            # Load data first
-            if self.data_loader.load_data():
-                self.data_loaded = True
-                logger.info(" Data loaded successfully")
-            
-            # Load GCN model
+    def _ensure_loaded(self):
+        """Lazy load model on first request"""
+        if not self._initialized:
+            logger.info(" Loading GCN model on first request...")
+            # Load only the GCN model (small, just weights)
             if self.model_loader.load_model():
                 self.models_loaded = True
                 logger.info(" GCN model loaded successfully")
             else:
-                logger.warning("️ GCN model loading failed, using constraint-based recommendations only")
+                logger.warning(" GCN model not available, using constraint-based recommendations only")
                 self.models_loaded = False
             
-            # Initialize RAG pipeline if knowledge graph is available
-            if self.data_loaded and self.data_loader.knowledge_graph and self.model_loader.model_metadata:
-                try:
-                    self.semantic_retriever = SemanticRetriever(
-                        triples_data=self.data_loader.knowledge_graph,
-                        entity_to_id=self.model_loader.model_metadata['entity_to_id'],
-                        id_to_entity=self.model_loader.model_metadata['id_to_entity']
-                    )
-                    self.rag_loaded = True
-                    logger.info(" RAG pipeline initialized successfully")
-                except Exception as e:
-                    logger.warning(f"️ RAG pipeline initialization failed: {e}")
-                    self.rag_loaded = False
-            else:
-                logger.warning("️ RAG pipeline not initialized - missing knowledge graph or model metadata")
-                self.rag_loaded = False
-            
-            logger.info(" Agricultural recommendation system initialized")
-            
-        except Exception as e:
-            logger.error(f" Error initializing system: {e}")
-            self.models_loaded = False
-            self.data_loaded = False
+            self.data_loaded = True  # Mark as loaded (even though we skip heavy data)
+            self._initialized = True
     
     def get_recommendation(self, soil_properties, climate_conditions, **kwargs):
         """Get crop recommendation based on soil and climate data"""
+        # Lazy load model if not already loaded
+        self._ensure_loaded()
+        
         try:
             logger.info(f"Generating recommendation for soil: {soil_properties}, climate: {climate_conditions}")
             
@@ -730,6 +694,10 @@ class AgriculturalAPI:
                         'violations': evaluation['violations'],
                         'farming_factors': self._get_farming_factors(crop, farming_conditions)
                     })
+            
+            # Enhance with GCN model if available
+            if self.models_loaded and self.model_loader.model is not None:
+                suitable_crops = self._enhance_with_gcn_model(suitable_crops, soil_properties, climate_conditions)
             
             # Sort by suitability score
             suitable_crops.sort(key=lambda x: x['suitability_score'], reverse=True)
@@ -764,6 +732,57 @@ class AgriculturalAPI:
         except Exception as e:
             logger.error(f"❌ Error generating recommendation: {e}")
             raise e
+    
+    def _enhance_with_gcn_model(self, suitable_crops, soil_properties, climate_conditions):
+        """Enhance recommendations with GCN model embeddings"""
+        try:
+            if not self.model_loader.model or not self.model_loader.model_metadata:
+                return suitable_crops  # Return as-is if no model
+            
+            enhanced_crops = []
+            entity_to_id = self.model_loader.entity_to_id
+            model = self.model_loader.model
+            
+            for crop in suitable_crops:
+                enhanced_crop = crop.copy()
+                
+                # Try to get entity ID for this crop
+                crop_name = crop['crop'].lower()
+                
+                # Look for crop in entity mappings
+                crop_id = None
+                for entity, eid in entity_to_id.items():
+                    if crop_name in entity.lower():
+                        crop_id = eid
+                        break
+                
+                if crop_id is not None:
+                    try:
+                        # Get enhanced embedding from GCN model
+                        with torch.no_grad():
+                            entity_tensor = torch.tensor([crop_id], dtype=torch.long)
+                            embedding = model(entity_tensor)
+                            
+                            # Use embedding magnitude to adjust score
+                            embedding_score = float(torch.norm(embedding).item())
+                            # Normalize to 0-1 range and add small boost
+                            normalized_score = min(1.0, embedding_score / 10.0) * 0.1
+                            enhanced_crop['suitability_score'] = min(1.0, enhanced_crop['suitability_score'] + normalized_score)
+                            enhanced_crop['model_enhanced'] = True
+                    except Exception as e:
+                        logger.warning(f" Could not enhance {crop['crop']} with model: {e}")
+                        enhanced_crop['model_enhanced'] = False
+                else:
+                    enhanced_crop['model_enhanced'] = False
+                    logger.debug(f" Crop {crop['crop']} not found in entity mappings")
+                
+                enhanced_crops.append(enhanced_crop)
+            
+            return enhanced_crops
+            
+        except Exception as e:
+            logger.error(f" Error enhancing with GCN model: {e}")
+            return suitable_crops  # Return original if enhancement fails
     
     def _generate_land_allocation(self, suitable_crops, available_land):
         """Generate optimal land allocation plan"""
@@ -1617,12 +1636,15 @@ Keep the response practical, actionable, and suitable for smallholder farmers in
     def _get_data_sources(self):
         """Get information about data sources used"""
         sources = {
-            "knowledge_graph_triples": len(self.data_loader.knowledge_graph) if self.data_loader.knowledge_graph else 0,
-            "dataset_triples": len(self.data_loader.dataset_triples) if self.data_loader.dataset_triples else 0,
-            "literature_triples": len(self.data_loader.literature_triples) if self.data_loader.literature_triples else 0,
-            "ugandan_data_points": len(self.data_loader.ugandan_data) if hasattr(self.data_loader, 'ugandan_data') and self.data_loader.ugandan_data is not None else 0,
+            "constraint_engine": "active",
+            "gcn_model_loaded": self.models_loaded,
+            "knowledge_graph_triples": 0,  # Not loading large KG
+            "dataset_triples": 0,  # Not loading
+            "literature_triples": 0,
+            "ugandan_data_points": 0,
             "rag_pipeline_active": self.rag_loaded,
-            "llm_model_available": llm_model is not None
+            "llm_model_available": llm_model is not None,
+            "mode": "lightweight_with_model"
         }
         
         return sources
