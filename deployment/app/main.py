@@ -978,7 +978,7 @@ class AgriculturalAPI:
                 suitability_desc = "strong suitability"
             elif score >= 0.40:
                 suitability_desc = "moderate suitability"
-            else:
+        else:
                 suitability_desc = "acceptable compatibility"
             
             insights_parts.append(f"Analysis indicates {crop_name} shows {suitability_desc} ({(score*100):.0f}%) with your conditions. ")
@@ -986,7 +986,7 @@ class AgriculturalAPI:
             if len(suitable_crops) > 1:
                 alt_count = len(suitable_crops) - 1
                 insights_parts.append(f"Additionally, {alt_count} alternative crop{'s' if alt_count > 1 else ''} show{'s' if alt_count == 1 else ''} strong potential. ")
-        else:
+            else:
             insights_parts.append("Multiple crops are suitable for your conditions with proper management. ")
         
         # Soil pH analysis
@@ -2451,6 +2451,189 @@ def home():
             margin: 20px 0;
             display: none;
         }
+        
+        /* Real-time Validation Feedback */
+        .form-group {
+            position: relative;
+        }
+        
+        .form-group input:focus,
+        .form-group select:focus {
+            border-color: #00ff96;
+            box-shadow: 0 0 0 3px rgba(0, 255, 150, 0.1);
+        }
+        
+        .form-group.success input,
+        .form-group.success select {
+            border-color: #00ff96;
+        }
+        
+        .form-group.error input,
+        .form-group.error select {
+            border-color: #ff3b30;
+        }
+        
+        .form-group .validation-icon {
+            position: absolute;
+            right: 15px;
+            top: 40px;
+            font-size: 1.2rem;
+            opacity: 0;
+            transition: opacity 0.3s ease;
+        }
+        
+        .form-group.success .validation-icon {
+            color: #00ff96;
+            opacity: 1;
+        }
+        
+        .form-group.error .validation-icon {
+            color: #ff3b30;
+            opacity: 1;
+        }
+        
+        .form-group .error-text {
+            color: #ff3b30;
+            font-size: 0.8rem;
+            margin-top: 5px;
+            display: none;
+        }
+        
+        .form-group.error .error-text {
+            display: block;
+        }
+        
+        /* Progress Bar for Loading */
+        .loading-progress {
+            width: 100%;
+            height: 4px;
+            background: rgba(0, 255, 150, 0.1);
+            border-radius: 2px;
+            overflow: hidden;
+            margin-top: 20px;
+        }
+        
+        .loading-progress-bar {
+            height: 100%;
+            background: linear-gradient(90deg, #00ff96, #00d4aa);
+            border-radius: 2px;
+            animation: loading-progress 2s infinite;
+        }
+        
+        @keyframes loading-progress {
+            0% { width: 0%; }
+            50% { width: 70%; }
+            100% { width: 100%; }
+        }
+        
+        /* Suitability Score Progress Bar */
+        .score-bar {
+            width: 100%;
+            height: 8px;
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 10px;
+            overflow: hidden;
+            margin: 8px 0;
+        }
+        
+        .score-bar-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #00ff96, #00d4aa);
+            border-radius: 10px;
+            transition: width 0.8s ease;
+            position: relative;
+        }
+        
+        .score-bar-fill::after {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.3), transparent);
+            animation: shimmer 2s infinite;
+        }
+        
+        @keyframes shimmer {
+            0% { transform: translateX(-100%); }
+            100% { transform: translateX(100%); }
+        }
+        
+        /* Improved Crop Cards */
+        .crop-card-header-score {
+            font-size: 1.2rem;
+            font-weight: 700;
+            color: #00ff96;
+            margin-left: auto;
+        }
+        
+        .crop-card.expanded {
+            border-color: #00ff96;
+            box-shadow: 0 0 20px rgba(0, 255, 150, 0.2);
+        }
+        
+        .crop-card-toggle {
+            cursor: pointer;
+            transition: transform 0.3s ease;
+        }
+        
+        .crop-card.expanded .crop-card-toggle i {
+            transform: rotate(180deg);
+        }
+        
+        /* Tooltip for Help Text */
+        .help-tooltip {
+            position: relative;
+            display: inline-block;
+            margin-left: 8px;
+            cursor: help;
+        }
+        
+        .help-tooltip-icon {
+            color: #a0a0a0;
+            font-size: 0.9rem;
+        }
+        
+        .help-tooltip:hover .help-tooltip-icon {
+            color: #00ff96;
+        }
+        
+        .help-tooltip-text {
+            position: absolute;
+            bottom: 125%;
+            left: 50%;
+            transform: translateX(-50%);
+            background: rgba(20, 20, 40, 0.98);
+            color: #e0e6ed;
+            padding: 10px 15px;
+            border-radius: 8px;
+            font-size: 0.85rem;
+            width: 250px;
+            text-align: left;
+            z-index: 1000;
+            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.3);
+            border: 1px solid rgba(0, 255, 150, 0.3);
+            opacity: 0;
+            visibility: hidden;
+            transition: opacity 0.3s, visibility 0.3s;
+            pointer-events: none;
+        }
+        
+        .help-tooltip:hover .help-tooltip-text {
+            opacity: 1;
+            visibility: visible;
+        }
+        
+        .help-tooltip-text::after {
+            content: '';
+            position: absolute;
+            top: 100%;
+            left: 50%;
+            transform: translateX(-50%);
+            border: 6px solid transparent;
+            border-top-color: rgba(20, 20, 40, 0.98);
+        }
     </style>
 </head>
 <body>
@@ -2493,15 +2676,41 @@ def home():
                     <div class="form-grid">
                         <!-- Soil Properties -->
                         <div class="form-group">
-                            <label for="soil_ph"><i class="fas fa-flask"></i> Soil pH</label>
+                            <label for="soil_ph">
+                                <i class="fas fa-flask"></i> Soil pH
+                                <span class="help-tooltip">
+                                    <i class="fas fa-question-circle help-tooltip-icon"></i>
+                                    <span class="help-tooltip-text">pH measures soil acidity. Most crops grow best at pH 6.0-7.5. Lower pH is acidic, higher is alkaline.</span>
+                                </span>
+                            </label>
                             <input type="number" id="soil_ph" name="soil_ph" step="0.1" min="0" max="14" placeholder="Enter soil pH (0-14, e.g., 6.5)">
+                            <span class="validation-icon">
+                                <i class="fas fa-check-circle"></i>
+                            </span>
+                            <div class="error-text">Please enter a valid pH value between 0 and 14</div>
                         </div>
                         <div class="form-group">
-                            <label for="organic_matter"><i class="fas fa-leaf"></i> Organic Matter (%)</label>
+                            <label for="organic_matter">
+                                <i class="fas fa-leaf"></i> Organic Matter (%)
+                                <span class="help-tooltip">
+                                    <i class="fas fa-question-circle help-tooltip-icon"></i>
+                                    <span class="help-tooltip-text">Organic matter improves soil structure and nutrient availability. Aim for 3-5% for healthy crops.</span>
+                                </span>
+                            </label>
                             <input type="number" id="organic_matter" name="organic_matter" step="0.1" min="0" max="20" placeholder="Enter organic matter %">
+                            <span class="validation-icon">
+                                <i class="fas fa-check-circle"></i>
+                            </span>
+                            <div class="error-text">Please enter a value between 0 and 20</div>
                         </div>
                         <div class="form-group">
-                            <label for="texture_class"><i class="fas fa-mountain"></i> Soil Texture</label>
+                            <label for="texture_class">
+                                <i class="fas fa-mountain"></i> Soil Texture
+                                <span class="help-tooltip">
+                                    <i class="fas fa-question-circle help-tooltip-icon"></i>
+                                    <span class="help-tooltip-text">Soil texture affects water retention and drainage. Loam is ideal for most crops.</span>
+                                </span>
+                            </label>
                             <select id="texture_class" name="texture_class">
                                 <option value="">Select soil texture</option>
                                 <option value="clay">Clay</option>
@@ -2512,6 +2721,10 @@ def home():
                                 <option value="silt_loam">Silt Loam</option>
                                 <option value="sandy">Sandy</option>
                             </select>
+                            <span class="validation-icon">
+                                <i class="fas fa-check-circle"></i>
+                            </span>
+                            <div class="error-text">Please select a soil texture</div>
                         </div>
                         
                         <!-- Soil Nutrients -->
@@ -2555,7 +2768,15 @@ def home():
                 <div class="loading-container" id="loadingContainer">
                     <div class="ai-loader"></div>
                     <div class="loading-text">AI analyzing conditions...</div>
-            </div>
+                    <div class="loading-progress">
+                        <div class="loading-progress-bar"></div>
+                    </div>
+                    <div class="loading-steps" style="margin-top: 20px; color: #a0a0a0; font-size: 0.9rem;">
+                        <div><i class="fas fa-check" style="color: #00ff96;"></i> Analyzing soil properties</div>
+                        <div style="margin-top: 8px;"><i class="fas fa-check" style="color: #00ff96;"></i> Evaluating crop suitability</div>
+                        <div style="margin-top: 8px;"><i class="fas fa-spinner fa-spin" style="color: #00ff96;"></i> Loading AI insights</div>
+                    </div>
+                </div>
             
                 <!-- Error/Success Messages -->
                 <div class="error-message" id="errorMessage"></div>
@@ -2584,6 +2805,76 @@ def home():
             const errorMessage = document.getElementById('errorMessage');
             const successMessage = document.getElementById('successMessage');
             const resultsContent = document.getElementById('resultsContent');
+            
+            // Real-time validation function
+            function validateField(fieldName, value) {
+                const field = document.querySelector(`#${fieldName}`);
+                const formGroup = field.closest('.form-group');
+                
+                // Remove previous validation states
+                formGroup.classList.remove('success', 'error');
+                
+                if (!value || value === '') {
+                    formGroup.classList.add('error');
+                    return false;
+                }
+                
+                // Field-specific validation
+                let isValid = true;
+                switch(fieldName) {
+                    case 'soil_ph':
+                        const ph = parseFloat(value);
+                        isValid = ph >= 0 && ph <= 14;
+                        break;
+                    case 'organic_matter':
+                        const om = parseFloat(value);
+                        isValid = om >= 0 && om <= 20;
+                        break;
+                    case 'texture_class':
+                        isValid = value !== '';
+                        break;
+                    case 'nitrogen':
+                    case 'phosphorus':
+                    case 'potassium':
+                        const nutrient = parseFloat(value);
+                        isValid = !isNaN(nutrient) && nutrient >= 0;
+                        break;
+                    case 'temperature_mean':
+                        const temp = parseFloat(value);
+                        isValid = temp >= 10 && temp <= 40;
+                        break;
+                    case 'rainfall_mean':
+                        const rain = parseFloat(value);
+                        isValid = rain >= 200 && rain <= 3000;
+                        break;
+                    case 'available_land':
+                        const land = parseFloat(value);
+                        isValid = land > 0 && land <= 1000;
+                        break;
+                }
+                
+                if (isValid) {
+                    formGroup.classList.add('success');
+                } else {
+                    formGroup.classList.add('error');
+                }
+                
+                return isValid;
+            }
+            
+            // Add real-time validation to all input fields
+            const formFields = form.querySelectorAll('input, select');
+            formFields.forEach(field => {
+                field.addEventListener('blur', function() {
+                    validateField(this.name, this.value);
+                });
+                
+                field.addEventListener('input', function() {
+                    if (this.value) {
+                        validateField(this.name, this.value);
+                    }
+                });
+            });
             
             // Form submission with AI loading animation
             form.addEventListener('submit', async function(e) {
@@ -2782,10 +3073,16 @@ def home():
                 if (result.suitable_crops && result.suitable_crops.length > 0) {
                     html += '<div class="crop-grid">';
                     result.suitable_crops.forEach(crop => {
+                        const suitabilityPercent = (crop.suitability_score * 100).toFixed(1);
                         html += `
                             <div class="crop-card">
-                                <div class="crop-name">${crop.crop.charAt(0).toUpperCase() + crop.crop.slice(1)}</div>
-                                <div class="crop-score">Suitability: ${(crop.suitability_score * 100).toFixed(1)}%</div>
+                                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+                                    <div class="crop-name">${crop.crop.charAt(0).toUpperCase() + crop.crop.slice(1)}</div>
+                                    <div class="crop-card-header-score">${suitabilityPercent}%</div>
+                                </div>
+                                <div class="score-bar">
+                                    <div class="score-bar-fill" style="width: ${suitabilityPercent}%"></div>
+                                </div>
                                 <div class="crop-details">
                                     ${crop.recommendations && crop.recommendations.length > 0 ? `
                                         <strong>Recommendations:</strong>
