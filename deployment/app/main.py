@@ -786,6 +786,13 @@ class AgriculturalAPI:
                             crop_entity = variation
                             break
                 
+                # If still not found, try matching crop URLs (http://example.org/agrokg/crop/CROP_NAME)
+                if crop_id is None:
+                    crop_url = f"http://example.org/agrokg/crop/{crop_name}"
+                    if crop_url in entity_to_id:
+                        crop_id = entity_to_id[crop_url]
+                        crop_entity = crop_url
+                
                 # If still not found, try partial matching
                 if crop_id is None:
                     for entity, eid in entity_to_id.items():
