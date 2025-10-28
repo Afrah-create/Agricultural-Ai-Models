@@ -962,23 +962,135 @@ class AgriculturalAPI:
             except Exception as e:
                 logger.warning(f"Fine-tuned model generation failed: {e}")
         
-        # Fallback to structured AI insights
+        # Improved fallback to structured AI insights with contextual analysis
+        insights_parts = []
+        
+        # Crop recommendation
         if suitable_crops:
             top_crop = suitable_crops[0]
-            insights = f"Our advanced AI analysis indicates that {top_crop['crop'].title()} demonstrates optimal compatibility with your agricultural conditions. "
-        else:
-            insights = "Our advanced AI analysis indicates optimal agricultural conditions for crop cultivation. "
-        
-        if soil_properties.get('pH'):
-            ph = soil_properties['pH']
-            if ph < 6.0:
-                insights += f"Your soil pH of {ph} is slightly acidic, which can be effectively improved with lime application to enhance nutrient availability. "
-            elif ph > 7.5:
-                insights += f"Your soil pH of {ph} is alkaline, consider adding organic matter to improve soil structure and nutrient uptake. "
+            crop_name = top_crop['crop'].title()
+            score = top_crop['suitability_score']
+            
+            # Determine suitability level
+            if score >= 0.80:
+                suitability_desc = "excellent compatibility"
+            elif score >= 0.60:
+                suitability_desc = "strong suitability"
+            elif score >= 0.40:
+                suitability_desc = "moderate suitability"
             else:
-                insights += f"Your soil pH of {ph} is within the optimal range for most crops, providing excellent growing conditions. "
+                suitability_desc = "acceptable compatibility"
+            
+            insights_parts.append(f"Analysis indicates {crop_name} shows {suitability_desc} ({(score*100):.0f}%) with your conditions. ")
+            
+            if len(suitable_crops) > 1:
+                alt_count = len(suitable_crops) - 1
+                insights_parts.append(f"Additionally, {alt_count} alternative crop{'s' if alt_count > 1 else ''} show{'s' if alt_count == 1 else ''} strong potential. ")
+        else:
+            insights_parts.append("Multiple crops are suitable for your conditions with proper management. ")
         
-        insights += f"Expected yield potential is excellent with proper management practices including soil preparation, appropriate fertilization, and regular monitoring. The AI recommends implementing precision agriculture techniques for optimal results."
+        # Soil pH analysis
+        ph = soil_properties.get('pH')
+        if ph:
+            if ph < 5.5:
+                insights_parts.append(f"Soil pH is highly acidic ({ph}), requiring urgent liming. Apply 2-3 tons of agricultural lime per hectare to raise pH to 6.0-6.5 for optimal nutrient availability. ")
+            elif ph < 6.0:
+                insights_parts.append(f"Soil pH is moderately acidic ({ph}). Apply 1-2 tons of lime per hectare and incorporate organic matter to improve soil buffering capacity. ")
+            elif 6.0 <= ph <= 7.5:
+                insights_parts.append(f"Soil pH ({ph}) is within the optimal range for most crops, promoting efficient nutrient uptake. ")
+            elif ph <= 8.0:
+                insights_parts.append(f"Soil pH is slightly alkaline ({ph}). Organic matter addition and sulfur application can help lower pH if needed for specific crops. ")
+            else:
+                insights_parts.append(f"Soil pH is strongly alkaline ({ph}), which may limit micronutrient availability. Consider acidifying amendments and focus on alkaline-tolerant crops. ")
+        
+        # Organic matter analysis
+        om = soil_properties.get('organic_matter')
+        if om:
+            if om < 2.0:
+                insights_parts.append(f"Organic matter is low ({om}%), indicating poor soil health. Implement composting, cover cropping, and reduced tillage to build organic matter to at least 3-4%. ")
+            elif om < 3.5:
+                insights_parts.append(f"Organic matter ({om}%) is below optimal. Incorporate crop residues and manure to enhance soil structure and water retention. ")
+            else:
+                insights_parts.append(f"Organic matter ({om}%) is adequate, supporting good soil structure and microbial activity. ")
+        
+        # Nutrient analysis (NPK)
+        nitrogen = soil_properties.get('nitrogen', 0)
+        phosphorus = soil_properties.get('phosphorus', 0)
+        potassium = soil_properties.get('potassium', 0)
+        
+        nutrient_issues = []
+        if nitrogen < 20:
+            nutrient_issues.append("N-deficient")
+        elif nitrogen > 80:
+            nutrient_issues.append("excessive N")
+        
+        if phosphorus < 10:
+            nutrient_issues.append("P-deficient")
+        elif phosphorus > 60:
+            nutrient_issues.append("high P")
+        
+        if potassium < 100:
+            nutrient_issues.append("K-deficient")
+        elif potassium > 400:
+            nutrient_issues.append("excessive K")
+        
+        if nutrient_issues:
+            insights_parts.append(f"Nutrient status shows {', '.join(nutrient_issues).replace('-', ' ')} with levels of N:{nitrogen}, P:{phosphorus}, K:{potassium} ppm. ")
+        else:
+            insights_parts.append(f"Nutrient levels are balanced (N:{nitrogen}, P:{phosphorus}, K:{potassium} ppm), supporting healthy crop growth. ")
+        
+        # Climate analysis
+        temp = climate_conditions.get('temperature_mean')
+        rainfall = climate_conditions.get('rainfall_mean')
+        
+        if temp and rainfall:
+            if temp < 15:
+                insights_parts.append(f"Cool temperatures ({temp}°C) favor cool-season crops and early planting is essential. ")
+            elif temp > 30:
+                insights_parts.append(f"High temperatures ({temp}°C) require heat-tolerant varieties and adequate irrigation. ")
+            else:
+                insights_parts.append(f"Temperature ({temp}°C) is favorable for most tropical crops. ")
+            
+            if rainfall < 500:
+                insights_parts.append(f"Low rainfall ({rainfall}mm) necessitates irrigation planning and drought-resistant varieties. ")
+            elif rainfall > 1500:
+                insights_parts.append(f"High rainfall ({rainfall}mm) requires good drainage and disease-resistant cultivars. ")
+            else:
+                insights_parts.append(f"Rainfall pattern ({rainfall}mm) is suitable for diverse cropping. ")
+        
+        # Soil texture analysis
+        texture = soil_properties.get('texture_class', '').lower()
+        if texture:
+            texture_benefits = {
+                'clay': 'high water retention but requires drainage management',
+                'loamy': 'excellent structure and nutrient-holding capacity',
+                'sandy': 'good drainage but needs frequent irrigation and organic matter',
+                'silty': 'good water-holding with moderate drainage'
+            }
+            if texture in texture_benefits:
+                insights_parts.append(f"Soil texture is {texture}, providing {texture_benefits[texture]}. ")
+        
+        # Management recommendations based on analysis
+        recommendations = []
+        if ph and ph < 6.0:
+            recommendations.append("liming")
+        if om and om < 3.0:
+            recommendations.append("organic matter enhancement")
+        if nitrogen < 30 or phosphorus < 15 or potassium < 150:
+            recommendations.append("balanced fertilization")
+        if rainfall and rainfall < 600:
+            recommendations.append("water conservation practices")
+        
+        if recommendations:
+            insights_parts.append(f"Key priorities: implement {' and '.join(recommendations)} to optimize production potential. ")
+        
+        # Combine all insights
+        insights = ''.join(insights_parts)
+        
+        # Remove any trailing spaces and ensure proper ending
+        insights = insights.strip()
+        if not insights.endswith('.'):
+            insights += '.'
         
         return insights
     
