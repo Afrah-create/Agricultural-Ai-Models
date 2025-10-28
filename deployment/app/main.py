@@ -1897,6 +1897,7 @@ def home():
     <title>AgriAI - Intelligent Agricultural Assistant</title>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
         * {
             margin: 0;
@@ -2677,6 +2678,73 @@ def home():
             border: 6px solid transparent;
             border-top-color: rgba(20, 20, 40, 0.98);
         }
+        
+        /* Chart Styles */
+        #landAllocationChart {
+            max-width: 100%;
+            height: auto !important;
+        }
+        
+        .chart-legend {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+        
+        .chart-legend-item {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 8px;
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 8px;
+            border-left: 4px solid;
+        }
+        
+        .legend-color {
+            width: 20px;
+            height: 20px;
+            border-radius: 4px;
+        }
+        
+        .legend-info {
+            flex: 1;
+            color: #e0e6ed;
+            font-size: 0.9rem;
+        }
+        
+        .legend-crop {
+            font-weight: 600;
+            color: #ffffff;
+            text-transform: capitalize;
+        }
+        
+        .legend-area {
+            color: #a0a0a0;
+            font-size: 0.85rem;
+        }
+        
+        /* Chart Container - Responsive */
+        .chart-container {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+            align-items: center;
+        }
+        
+        @media (max-width: 768px) {
+            .chart-container {
+                grid-template-columns: 1fr !important;
+            }
+            
+            #landAllocationChart {
+                margin: 0 auto;
+            }
+            
+            .chart-legend {
+                margin-top: 20px;
+            }
+        }
     </style>
 </head>
 <body>
@@ -3169,25 +3237,29 @@ def home():
                 }
                 
                 // Land allocation if available
-                if (result.land_allocation) {
+                if (result.land_allocation && result.land_allocation.crop_details && result.land_allocation.crop_details.length > 0) {
                     html += `
-                        <div style="background: rgba(25, 25, 50, 0.8); padding: 15px; border-radius: 12px; margin-top: 20px;">
-                            <h3 style="color: #ffffff; margin-bottom: 12px; font-size: 1.1rem;"><i class="fas fa-map"></i> Land Plan</h3>
-                            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px;">
-                                ${result.land_allocation.crop_details.map(crop => `
-                                    <div style="background: rgba(0, 255, 150, 0.1); padding: 12px; border-radius: 8px; border: 1px solid rgba(0, 255, 150, 0.2); text-align: center;">
-                                        <div style="color: #00ff96; font-weight: 600; font-size: 0.9rem;">${crop.crop.charAt(0).toUpperCase() + crop.crop.slice(1)}</div>
-                                        <div style="color: #ffffff; font-size: 0.85rem; margin: 5px 0;">${crop.land_allocated} ha</div>
-                                        <div style="color: #a0a0a0; font-size: 0.75rem;">${(crop.suitability_score * 100).toFixed(1)}%</div>
-                    </div>
-                                `).join('')}
-                    </div>
-                    </div>
-                `;
+                        <div style="background: rgba(25, 25, 50, 0.8); padding: 20px; border-radius: 12px; margin-top: 20px;">
+                            <h3 style="color: #ffffff; margin-bottom: 15px; font-size: 1.1rem; display: flex; align-items: center; gap: 8px;">
+                                <i class="fas fa-chart-pie"></i> Land Allocation Plan
+                            </h3>
+                            <div class="chart-container">
+                                <div>
+                                    <canvas id="landAllocationChart"></canvas>
+                                </div>
+                                <div class="chart-legend" id="landChartLegend"></div>
+                            </div>
+                        </div>
+                    `;
                 }
                 
                 resultsContent.innerHTML = html;
                 resultsContainer.style.display = 'block';
+                
+                // Render pie chart for land allocation
+                if (result.land_allocation && result.land_allocation.crop_details && result.land_allocation.crop_details.length > 0) {
+                    renderLandAllocationChart(result.land_allocation.crop_details);
+                }
                 
                 // Smooth scroll to results
                 resultsContainer.scrollIntoView({ behavior: 'smooth' });
@@ -3290,6 +3362,103 @@ def home():
             } else {
                 toggleBtn.textContent = 'View Details';
             }
+        }
+        
+        // Render pie chart for land allocation
+        function renderLandAllocationChart(cropDetails) {
+            const canvas = document.getElementById('landAllocationChart');
+            if (!canvas) return;
+            
+            const ctx = canvas.getContext('2d');
+            
+            // Color palette for crops
+            const cropColors = {
+                'maize': '#FFD700',
+                'rice': '#4169E1',
+                'beans': '#228B22',
+                'cassava': '#FF8C00',
+                'sweet_potato': '#9370DB',
+                'banana': '#FFFF00',
+                'coffee': '#8B4513',
+                'cotton': '#FF69B4',
+                'sweet potato': '#9370DB',
+                'red pepper': '#FF0000',
+                'peas': '#90EE90',
+                'groundnut': '#DAA520'
+            };
+            
+            // Prepare data
+            const labels = cropDetails.map(crop => crop.crop.charAt(0).toUpperCase() + crop.crop.slice(1));
+            const data = cropDetails.map(crop => parseFloat(crop.land_allocated));
+            const colors = cropDetails.map(crop => cropColors[crop.crop] || '#00ff96');
+            const suitabilityScores = cropDetails.map(crop => (crop.suitability_score * 100).toFixed(1) + '%');
+            
+            // Create legend
+            const legendHtml = cropDetails.map((crop, index) => `
+                <div class="chart-legend-item" style="border-left-color: ${colors[index]};">
+                    <div class="legend-color" style="background-color: ${colors[index]};"></div>
+                    <div class="legend-info">
+                        <div class="legend-crop">${crop.crop.charAt(0).toUpperCase() + crop.crop.slice(1)}</div>
+                        <div class="legend-area">${crop.land_allocated} ha (${suitabilityScores[index]} suitable)</div>
+                    </div>
+                </div>
+            `).join('');
+            
+            const legendContainer = document.getElementById('landChartLegend');
+            if (legendContainer) {
+                legendContainer.innerHTML = legendHtml;
+            }
+            
+            // Create chart
+            new Chart(ctx, {
+                type: 'pie',
+                data: {
+                    labels: labels,
+                    datasets: [{
+                        data: data,
+                        backgroundColor: colors,
+                        borderColor: 'rgba(255, 255, 255, 0.2)',
+                        borderWidth: 2,
+                        hoverOffset: 8
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: {
+                            display: false
+                        },
+                        tooltip: {
+                            backgroundColor: 'rgba(20, 20, 40, 0.95)',
+                            titleColor: '#ffffff',
+                            bodyColor: '#e0e6ed',
+                            borderColor: 'rgba(0, 255, 150, 0.5)',
+                            borderWidth: 1,
+                            padding: 12,
+                            callbacks: {
+                                label: function(context) {
+                                    const label = context.label || '';
+                                    const value = context.parsed || 0;
+                                    const dataset = context.dataset;
+                                    const percentage = ((value / dataset.data.reduce((a, b) => a + b, 0)) * 100).toFixed(1);
+                                    return `${label}: ${value.toFixed(2)} ha (${percentage}%)`;
+                                }
+                            }
+                        }
+                    },
+                    animation: {
+                        animateRotate: true,
+                        duration: 1000
+                    }
+                }
+            });
+            
+            // Set chart size responsively
+            const container = canvas.parentElement;
+            const isMobile = window.innerWidth < 768;
+            canvas.style.width = '100%';
+            canvas.style.height = isMobile ? '250px' : '300px';
         }
     </script>
 </body>
