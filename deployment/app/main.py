@@ -697,7 +697,12 @@ class AgriculturalAPI:
             
             # Enhance with GCN model if available
             if self.models_loaded and self.model_loader.model is not None:
+                logger.info(" Enhancing with GCN model embeddings...")
                 suitable_crops = self._enhance_with_gcn_model(suitable_crops, soil_properties, climate_conditions)
+                enhanced_count = sum(1 for c in suitable_crops if c.get('model_enhanced', False))
+                logger.info(f" GCN model enhanced {enhanced_count}/{len(suitable_crops)} crops")
+            else:
+                logger.warning(" GCN model not available - using constraint-based recommendations only")
             
             # Sort by suitability score
             suitable_crops.sort(key=lambda x: x['suitability_score'], reverse=True)
@@ -737,11 +742,15 @@ class AgriculturalAPI:
         """Enhance recommendations with GCN model embeddings"""
         try:
             if not self.model_loader.model or not self.model_loader.model_metadata:
+                logger.warning(" GCN model or metadata not available for enhancement")
                 return suitable_crops  # Return as-is if no model
             
             enhanced_crops = []
             entity_to_id = self.model_loader.entity_to_id
             model = self.model_loader.model
+            
+            logger.info(f" Attempting to enhance {len(suitable_crops)} crops with GCN model")
+            logger.info(f" Entity mappings available: {len(entity_to_id)} entities")
             
             for crop in suitable_crops:
                 enhanced_crop = crop.copy()
