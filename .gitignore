@@ -9,11 +9,20 @@ Dataset/
 *.tfevents*
 
 # Model files (already uploaded to Hugging Face)
+*.pth
+*.safetensors
+*.bin
 deployment/models/*.pth
-deployment/models/*.json
+deployment/models/model_metadata.json
+deployment/models/best_model_info.json
 deployment/processed/trained_models/
 deployment/quick_fine_tuned_fast/checkpoint-*
 deployment/quick_fine_tuned_fast/logs/
+deployment/quick_fine_tuned_fast/model.safetensors
+
+# But keep README files
+!deployment/models/README.md
+!deployment/quick_fine_tuned_fast/README.md
 
 # Python cache
 __pycache__/
