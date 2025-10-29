@@ -619,17 +619,69 @@ class FineTunedLLM:
                 
             logger.info(f" Loading fine-tuned model from Hugging Face: {self.model_path}")
             
-            # Load directly from Hugging Face (removed local_files_only=True)
-            self.tokenizer = AutoTokenizer.from_pretrained(self.model_path)
-            self.model = AutoModelForCausalLM.from_pretrained(self.model_path)
+            # Try multiple loading strategies for compatibility
+            try:
+                # Strategy 1: Load with trust_remote_code and use_fast=False for compatibility
+                logger.info(" Attempting to load tokenizer with standard settings...")
+                self.tokenizer = AutoTokenizer.from_pretrained(
+                    self.model_path,
+                    trust_remote_code=True,
+                    use_fast=False
+                )
+                logger.info(" Tokenizer loaded successfully")
+            except Exception as tokenizer_error:
+                logger.warning(f" Standard tokenizer loading failed: {tokenizer_error}")
+                try:
+                    # Strategy 2: Load without use_fast
+                    logger.info(" Attempting alternative tokenizer loading...")
+                    self.tokenizer = AutoTokenizer.from_pretrained(
+                        self.model_path,
+                        use_fast=False
+                    )
+                    logger.info(" Tokenizer loaded with alternative method")
+                except Exception as tokenizer_error2:
+                    logger.error(f" Alternative tokenizer loading also failed: {tokenizer_error2}")
+                    # Try minimal loading
+                    try:
+                        logger.info(" Attempting minimal tokenizer loading from config...")
+                        self.tokenizer = AutoTokenizer.from_pretrained(
+                            self.model_path,
+                            local_files_only=False,
+                            use_fast=False,
+                            trust_remote_code=True
+                        )
+                    except Exception as e:
+                        logger.error(f" All tokenizer loading methods failed: {e}")
+                        raise
             
+            # Load model
+            try:
+                logger.info(" Loading model weights...")
+                self.model = AutoModelForCausalLM.from_pretrained(
+                    self.model_path,
+                    trust_remote_code=True,
+                    torch_dtype=torch.float32
+                )
+                logger.info(" Model weights loaded successfully")
+            except Exception as model_error:
+                logger.error(f" Model loading failed: {model_error}")
+                raise
+            
+            # Configure tokenizer pad token if needed
             if self.tokenizer.pad_token is None:
-                self.tokenizer.pad_token = self.tokenizer.eos_token
+                if self.tokenizer.eos_token is not None:
+                    self.tokenizer.pad_token = self.tokenizer.eos_token
+                    logger.info(" Set pad_token to eos_token")
+                else:
+                    self.tokenizer.add_special_tokens({'pad_token': '[PAD]'})
+                    logger.info(" Added [PAD] token")
             
             logger.info(" Fine-tuned model loaded successfully from Hugging Face!")
             return True
         except Exception as e:
             logger.error(f" Error loading fine-tuned model: {e}")
+            import traceback
+            logger.error(f" Full traceback: {traceback.format_exc()}")
             logger.warning(" Fine-tuned model will not be available, using fallback analysis")
             return False
     
