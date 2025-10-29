@@ -47,6 +47,14 @@ FLASK_ENV=production
 PYTHONUNBUFFERED=1
 ```
 
+#### Memory Optimization (Recommended for Railway Free Tier):
+
+```env
+DISABLE_FINETUNED_MODEL=true
+```
+
+**Important**: By default, the fine-tuned LLM is **disabled** to save memory (328MB model). The application will use a highly optimized structured fallback that provides excellent agricultural insights. Set this to `false` only if you have sufficient memory (>2GB available).
+
 #### Optional Environment Variables (for enhanced features):
 
 ```env

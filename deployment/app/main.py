@@ -666,15 +666,23 @@ class FineTunedLLM:
                             logger.error(f" Base model tokenizer loading also failed: {base_error}")
                             raise
             
-            # Load model
+            # Load model with memory optimizations
             try:
                 logger.info(" Loading model weights...")
+                # Use float16 to reduce memory usage if supported, otherwise float32
+                # Chiesa: For CPU, we stick with float32 but use low_cpu_mem_usage
                 self.model = AutoModelForCausalLM.from_pretrained(
                     self.model_path,
                     trust_remote_code=True,
-                    torch_dtype=torch.float32
+                    torch_dtype=torch.float32,
+                    low_cpu_mem_usage=True,  # Optimize memory usage
+                    device_map='cpu'  # Explicitly use CPU
                 )
+                self.model.eval()  # Set to evaluation mode to disable dropout and save memory
                 logger.info(" Model weights loaded successfully")
+            except MemoryError as mem_error:
+                logger.error(f" Memory error loading model weights: {mem_error}")
+                raise
             except Exception as model_error:
                 logger.error(f" Model loading failed: {model_error}")
                 raise
@@ -759,13 +767,27 @@ class FineTunedLLM:
                 
                 # Add early stopping and max time limit
                 start_time = datetime.now()
-                outputs = self.model.generate(
-                    input_ids,
-                    attention_mask=attention_mask,
-                    **generation_params
-                )
+                
+                # Use torch.no_grad() and memory-efficient inference
+                with torch.no_grad():
+                    # Enable inference mode for better memory efficiency
+                    with torch.inference_mode():
+                        outputs = self.model.generate(
+                            input_ids,
+                            attention_mask=attention_mask,
+                            **generation_params
+                        )
+                
                 elapsed = (datetime.now() - start_time).total_seconds()
                 logger.info(f" Generation complete in {elapsed:.2f}s, output length: {outputs.shape[1]}")
+                
+                # Clear cache after generation to free memory
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                else:
+                    # Force garbage collection for CPU memory
+                    import gc
+                    gc.collect()
             
             response = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
             
@@ -817,17 +839,31 @@ class AgriculturalAPI:
                 logger.warning(" GCN model not available, using constraint-based recommendations only")
                 self.models_loaded = False
             
-            # Try to load fine-tuned LLM (optional, will use fallback if unavailable)
-            if TRANSFORMERS_AVAILABLE and self.finetuned_llm is None:
+            # Try to load fine-tuned LLM (optional, can be disabled via environment variable for memory constraints)
+            # Check if fine-tuned model is disabled via environment variable
+            disable_finetuned = os.getenv('DISABLE_FINETUNED_MODEL', 'true').lower() == 'true'  # Default to disabled for memory
+            
+            if disable_finetuned:
+                logger.info(" Fine-tuned LLM disabled via DISABLE_FINETUNED_MODEL environment variable (memory optimization)")
+                self.finetuned_llm = None
+            elif TRANSFORMERS_AVAILABLE and self.finetuned_llm is None:
                 try:
                     logger.info(" Attempting to load fine-tuned LLM from Hugging Face...")
+                    # Try loading but catch memory errors
                     self.finetuned_llm = FineTunedLLM()  # Will use Hugging Face repo by default
                     if self.finetuned_llm.model is None:
                         logger.warning(" Fine-tuned LLM not available, will use fallback analysis")
                         self.finetuned_llm = None
+                    else:
+                        logger.info(" Fine-tuned LLM loaded successfully")
+                except MemoryError as mem_error:
+                    logger.error(f" Memory error loading fine-tuned LLM: {mem_error}. Disabling to save memory.")
+                    self.finetuned_llm = None
                 except Exception as e:
                     logger.warning(f" Failed to load fine-tuned LLM: {e}. Using fallback analysis.")
                     self.finetuned_llm = None
+            else:
+                self.finetuned_llm = None
             
             self.data_loaded = True  # Mark as loaded (even though we skip heavy data)
             self._initialized = True
