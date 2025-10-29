@@ -703,50 +703,65 @@ class FineTunedLLM:
             if self.model is None or self.tokenizer is None:
                 return "Fine-tuned model not available."
             
-            # Tokenize input
-            inputs = self.tokenizer(prompt, return_tensors="pt", padding=True, truncation=True)
+            # Limit prompt length to avoid slow processing
+            max_prompt_tokens = 256
+            # Tokenize input with truncation
+            inputs = self.tokenizer(
+                prompt, 
+                return_tensors="pt", 
+                padding=True, 
+                truncation=True,
+                max_length=max_prompt_tokens
+            )
             
             # Move to same device as model
             device = next(self.model.parameters()).device
             input_ids = inputs['input_ids'].to(device)
             attention_mask = inputs['attention_mask'].to(device)
             
+            logger.info(f" Generating with input length: {input_ids.shape[1]} tokens")
+            
             with torch.no_grad():
-                # Use beam search if num_beams > 1, otherwise use sampling
+                # Optimize for speed - use greedy decoding
                 generation_params = {
                     'pad_token_id': self.tokenizer.eos_token_id,
                     'eos_token_id': self.tokenizer.eos_token_id,
                     'repetition_penalty': repetition_penalty,
-                    'no_repeat_ngram_size': 3
+                    'no_repeat_ngram_size': 2,  # Reduced from 3 for speed
+                    'do_sample': False  # Greedy decoding - fastest
                 }
                 
                 # Use max_new_tokens if specified (better for long prompts)
                 if max_new_tokens is not None:
-                    generation_params['max_new_tokens'] = max_new_tokens
+                    generation_params['max_new_tokens'] = min(max_new_tokens, 80)  # Cap at 80 for speed
                 elif max_length is not None:
-                    generation_params['max_length'] = max_length
+                    generation_params['max_length'] = min(max_length, input_ids.shape[1] + 80)
                 else:
-                    generation_params['max_new_tokens'] = 100
+                    generation_params['max_new_tokens'] = 60  # Reduced default from 100
                 
-                if num_beams > 1:
-                    # Use beam search (deterministic, higher quality)
+                # Force greedy decoding for speed (ignore num_beams > 1)
+                if num_beams > 1 and max_new_tokens and max_new_tokens <= 60:
+                    # Only use beam search for very short generations
                     generation_params.update({
-                        'num_beams': num_beams,
+                        'num_beams': min(num_beams, 2),  # Max 2 beams
                         'early_stopping': True,
                         'do_sample': False
                     })
+                    logger.info(" Using beam search (limited)")
                 else:
-                    # Use sampling (for when temperature > 0)
-                    generation_params.update({
-                        'temperature': temperature,
-                        'do_sample': temperature > 0
-                    })
+                    # Always use greedy decoding for speed
+                    generation_params['do_sample'] = False
+                    logger.info(" Using greedy decoding for speed")
+                
+                logger.info(f" Generation params: max_new_tokens={generation_params.get('max_new_tokens', 'N/A')}")
                 
                 outputs = self.model.generate(
                     input_ids,
                     attention_mask=attention_mask,
                     **generation_params
                 )
+                
+                logger.info(f" Generation complete, output length: {outputs.shape[1]}")
             
             response = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
             
@@ -754,10 +769,13 @@ class FineTunedLLM:
             if response.startswith(prompt):
                 response = response[len(prompt):].strip()
             
+            logger.info(f" Generation complete, response length: {len(response)} chars")
             return response
         except Exception as e:
             logger.error(f" Error generating response: {e}")
-            return "I'm sorry, I couldn't generate a response at this time."
+            import traceback
+            logger.error(f" Traceback: {traceback.format_exc()}")
+            return None
 
 class AgriculturalAPI:
     """Agricultural recommendation API with real data integration"""
@@ -1531,16 +1549,21 @@ class AgriculturalAPI:
                 top_crop, soil_properties, climate_conditions, rag_evidence_text, suitable_crops
             )
             
-            # Generate response with conservative parameters for better quality
+            # Generate response with optimized parameters for speed
+            logger.info(" Calling fine-tuned model generation...")
             response = self.finetuned_llm.generate_response(
                 prompt, 
-                max_new_tokens=120,  # Shorter to avoid repetition
-                temperature=0.3,     # Lower temperature = more factual
-                num_beams=2,          # Smaller beam = faster, still quality
-                repetition_penalty=1.3  # Strong penalty to prevent loops
+                max_new_tokens=60,   # Reduced for faster generation
+                temperature=0.7,     # Standard (not used with greedy)
+                num_beams=1,         # Greedy decoding - much faster
+                repetition_penalty=1.2  # Moderate penalty
             )
             
             # Clean up response and validate quality
+            if response is None:
+                logger.warning(" Fine-tuned model returned None, using fallback")
+                return self._get_fallback_llm_recommendation(top_crop, soil_properties, climate_conditions)
+                
             if response and len(response.strip()) > 15:
                 # Remove the prompt from response if it's included
                 if prompt in response:
