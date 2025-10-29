@@ -1118,14 +1118,45 @@ class AgriculturalAPI:
         return recommendation
     
     def _get_ai_insights(self, suitable_crops, soil_properties, climate_conditions):
-        """Get AI-generated insights from fine-tuned model"""
+        """Get AI-generated insights from fine-tuned model with timeout protection"""
         if self.finetuned_llm and self.finetuned_llm.model is not None:
             try:
-                insights = self._generate_finetuned_recommendation(suitable_crops, soil_properties, climate_conditions)
-                logger.info(" Fine-tuned model provided insights")
-                return insights
+                # Try to get insights from fine-tuned model with timeout
+                # Use threading for timeout (works on all platforms)
+                import threading
+                result = [None]
+                exception = [None]
+                
+                def generate_with_timeout():
+                    try:
+                        result[0] = self._generate_finetuned_recommendation(suitable_crops, soil_properties, climate_conditions)
+                    except Exception as e:
+                        exception[0] = e
+                
+                # Start generation in separate thread
+                thread = threading.Thread(target=generate_with_timeout)
+                thread.daemon = True
+                thread.start()
+                thread.join(timeout=15)  # 15 second timeout
+                
+                if thread.is_alive():
+                    logger.warning(" Fine-tuned model generation timed out after 15s, using fallback")
+                    return None
+                
+                if exception[0]:
+                    raise exception[0]
+                
+                if result[0]:
+                    logger.info(" Fine-tuned model provided insights")
+                    return result[0]
+                else:
+                    logger.warning(" Fine-tuned model returned empty result")
+                    return None
+                    
             except Exception as e:
                 logger.warning(f"Fine-tuned model generation failed: {e}")
+                import traceback
+                logger.debug(f" Traceback: {traceback.format_exc()}")
         
         # Improved fallback to structured AI insights with contextual analysis
         insights_parts = []
