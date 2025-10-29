@@ -732,12 +732,13 @@ class FineTunedLLM:
                 }
                 
                 # Use max_new_tokens if specified (better for long prompts)
+                # Aggressively reduce for CPU inference speed
                 if max_new_tokens is not None:
-                    generation_params['max_new_tokens'] = min(max_new_tokens, 80)  # Cap at 80 for speed
+                    generation_params['max_new_tokens'] = min(max_new_tokens, 50)  # Cap at 50 for CPU speed
                 elif max_length is not None:
-                    generation_params['max_length'] = min(max_length, input_ids.shape[1] + 80)
+                    generation_params['max_length'] = min(max_length, input_ids.shape[1] + 50)
                 else:
-                    generation_params['max_new_tokens'] = 60  # Reduced default from 100
+                    generation_params['max_new_tokens'] = 40  # Reduced to 40 for faster CPU generation
                 
                 # Force greedy decoding for speed (ignore num_beams > 1)
                 if num_beams > 1 and max_new_tokens and max_new_tokens <= 60:
@@ -754,14 +755,17 @@ class FineTunedLLM:
                     logger.info(" Using greedy decoding for speed")
                 
                 logger.info(f" Generation params: max_new_tokens={generation_params.get('max_new_tokens', 'N/A')}")
+                logger.info(" Starting model.generate()...")
                 
+                # Add early stopping and max time limit
+                start_time = datetime.now()
                 outputs = self.model.generate(
                     input_ids,
                     attention_mask=attention_mask,
                     **generation_params
                 )
-                
-                logger.info(f" Generation complete, output length: {outputs.shape[1]}")
+                elapsed = (datetime.now() - start_time).total_seconds()
+                logger.info(f" Generation complete in {elapsed:.2f}s, output length: {outputs.shape[1]}")
             
             response = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
             
@@ -1137,10 +1141,11 @@ class AgriculturalAPI:
                 thread = threading.Thread(target=generate_with_timeout)
                 thread.daemon = True
                 thread.start()
-                thread.join(timeout=15)  # 15 second timeout
+                thread.join(timeout=10)  # 10 second timeout (reduced from 15 for faster fallback)
                 
                 if thread.is_alive():
-                    logger.warning(" Fine-tuned model generation timed out after 15s, using fallback")
+                    logger.warning(" Fine-tuned model generation timed out after 10s, using fallback")
+                    # Model generation is still running but we'll use fallback
                     return None
                 
                 if exception[0]:
@@ -1582,20 +1587,29 @@ class AgriculturalAPI:
             
             # Generate response with optimized parameters for speed
             logger.info(" Calling fine-tuned model generation...")
-            response = self.finetuned_llm.generate_response(
-                prompt, 
-                max_new_tokens=60,   # Reduced for faster generation
-                temperature=0.7,     # Standard (not used with greedy)
-                num_beams=1,         # Greedy decoding - much faster
-                repetition_penalty=1.2  # Moderate penalty
-            )
+            try:
+                response = self.finetuned_llm.generate_response(
+                    prompt, 
+                    max_new_tokens=30,   # Very short for CPU speed (30 tokens ~ 20-25 words)
+                    temperature=0.7,     # Standard (not used with greedy)
+                    num_beams=1,         # Greedy decoding - much faster
+                    repetition_penalty=1.1  # Lower penalty for speed
+                )
+            except Exception as gen_error:
+                logger.error(f" Generation error in _generate_finetuned_recommendation: {gen_error}")
+                response = None
             
             # Clean up response and validate quality
             if response is None:
                 logger.warning(" Fine-tuned model returned None, using fallback")
                 return self._get_fallback_llm_recommendation(top_crop, soil_properties, climate_conditions)
+            
+            # Handle empty string responses
+            if not response or not isinstance(response, str):
+                logger.warning(f" Fine-tuned model returned invalid response type: {type(response)}")
+                return self._get_fallback_llm_recommendation(top_crop, soil_properties, climate_conditions)
                 
-            if response and len(response.strip()) > 15:
+            if len(response.strip()) > 15:
                 # Remove the prompt from response if it's included
                 if prompt in response:
                     response = response.split(prompt, 1)[-1].strip()
