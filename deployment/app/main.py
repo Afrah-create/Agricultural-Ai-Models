@@ -1063,7 +1063,7 @@ class AgriculturalAPI:
                 suitability_desc = "strong suitability"
             elif score >= 0.40:
                 suitability_desc = "moderate suitability"
-        else:
+            else:
                 suitability_desc = "acceptable compatibility"
             
             insights_parts.append(f"Analysis indicates {crop_name} shows {suitability_desc} ({(score*100):.0f}%) with your conditions. ")
@@ -1072,7 +1072,7 @@ class AgriculturalAPI:
                 alt_count = len(suitable_crops) - 1
                 insights_parts.append(f"Additionally, {alt_count} alternative crop{'s' if alt_count > 1 else ''} show{'s' if alt_count == 1 else ''} strong potential. ")
             else:
-            insights_parts.append("Multiple crops are suitable for your conditions with proper management. ")
+                insights_parts.append("Multiple crops are suitable for your conditions with proper management. ")
         
         # Soil pH analysis
         ph = soil_properties.get('pH')
