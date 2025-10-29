@@ -36,6 +36,15 @@ except ImportError:
     TRANSFORMERS_AVAILABLE = False
     logger.warning("️ Transformers library not available. Fine-tuned model features will be disabled.")
 
+# Import huggingface_hub for model downloads
+try:
+    from huggingface_hub import hf_hub_download
+    HF_HUB_AVAILABLE = True
+    logger.info(" Hugging Face Hub library imported successfully")
+except ImportError:
+    HF_HUB_AVAILABLE = False
+    logger.warning("️ Hugging Face Hub library not available. Will try to load models locally.")
+
 # Import Gemini API for LLM integration
 try:
     import google.generativeai as genai
@@ -219,13 +228,17 @@ class GCNModel(nn.Module):
         return x
 
 class AgriculturalModelLoader:
-    """Load and manage the trained GCN model"""
+    """Load and manage the trained GCN model from Hugging Face"""
+    
+    # Hugging Face repository ID for graph models
+    HF_REPO_ID = "Awongo/soil-crop-recommendation-model"
     
     def __init__(self, models_dir=None):
         # Get absolute paths based on the location of this file
         base_dir = os.path.dirname(os.path.abspath(__file__))
         parent_dir = os.path.dirname(base_dir)
         
+        # Keep models_dir for fallback to local loading
         self.models_dir = models_dir or os.path.join(parent_dir, "processed", "trained_models")
         self.model = None
         self.model_metadata = None
@@ -235,11 +248,64 @@ class AgriculturalModelLoader:
         self.id_to_relation = None
         
     def load_model(self):
-        """Load the trained model and metadata"""
+        """Load the trained model and metadata from Hugging Face"""
         try:
-            logger.info("Loading trained agricultural model...")
+            logger.info("Loading trained agricultural model from Hugging Face...")
             
-            # Load model metadata
+            # Try loading from Hugging Face first
+            if HF_HUB_AVAILABLE:
+                try:
+                    logger.info(f" Downloading model metadata from {self.HF_REPO_ID}...")
+                    metadata_path = hf_hub_download(
+                        repo_id=self.HF_REPO_ID,
+                        filename="model_metadata.json",
+                        cache_dir=None
+                    )
+                    
+                    # Load metadata
+                    with open(metadata_path, 'r') as f:
+                        self.model_metadata = json.load(f)
+                    
+                    self.entity_to_id = self.model_metadata.get('entity_to_id', {})
+                    self.id_to_entity = self.model_metadata.get('id_to_entity', {})
+                    self.relation_to_id = self.model_metadata.get('relation_to_id', {})
+                    self.id_to_relation = self.model_metadata.get('id_to_relation', {})
+                    
+                    logger.info(f" Loaded model metadata: {len(self.entity_to_id)} entities, {len(self.relation_to_id)} relations")
+                    
+                    # Download model weights
+                    logger.info(" Downloading best_model.pth from Hugging Face...")
+                    model_path = hf_hub_download(
+                        repo_id=self.HF_REPO_ID,
+                        filename="best_model.pth",
+                        cache_dir=None
+                    )
+                    
+                    # Create model instance
+                    if self.model_metadata:
+                        self.model = GCNModel(
+                            num_entities=self.model_metadata.get('num_entities', 2513),
+                            num_relations=self.model_metadata.get('num_relations', 15),
+                            embedding_dim=self.model_metadata.get('embedding_dim', 100)
+                        )
+                        
+                        # Load weights
+                        self.model.load_state_dict(torch.load(model_path, map_location='cpu'))
+                        self.model.eval()
+                        logger.info(" GCN model loaded successfully from Hugging Face")
+                        logger.info(f"Model parameters: {self.model_metadata.get('num_entities', 2513)} entities, {self.model_metadata.get('num_relations', 15)} relations, {self.model_metadata.get('embedding_dim', 100)} dim")
+                        return True
+                    else:
+                        logger.error(" Model metadata not loaded")
+                        return False
+                        
+                except Exception as e:
+                    logger.warning(f" Failed to load from Hugging Face: {e}")
+                    logger.info(" Falling back to local model files...")
+                    # Fall through to local loading
+            
+            # Fallback to local loading
+            logger.info("Loading trained agricultural model from local files...")
             metadata_path = os.path.join(self.models_dir, "model_metadata.json")
             if os.path.exists(metadata_path):
                 with open(metadata_path, 'r') as f:
@@ -266,7 +332,7 @@ class AgriculturalModelLoader:
                         # Load weights
                         self.model.load_state_dict(torch.load(model_path, map_location='cpu'))
                         self.model.eval()
-                        logger.info(" GCN model loaded successfully")
+                        logger.info(" GCN model loaded successfully from local files")
                         logger.info(f"Model parameters: {self.model_metadata.get('num_entities', 2513)} entities, {self.model_metadata.get('num_relations', 15)} relations, {self.model_metadata.get('embedding_dim', 100)} dim")
                         return True
                     else:
@@ -534,32 +600,39 @@ class AgriculturalConstraintEngine:
         }
 
 class FineTunedLLM:
-    """Fine-tuned agricultural LLM"""
+    """Fine-tuned agricultural LLM loaded from Hugging Face"""
     
-    def __init__(self, model_path):
-        self.model_path = model_path
+    # Hugging Face repository ID for fine-tuned LLM
+    HF_REPO_ID = "Awongo/agricultural-llm-finetuned"
+    
+    def __init__(self, model_path=None):
+        # Use Hugging Face repo ID if no local path provided
+        self.model_path = model_path or self.HF_REPO_ID
         self.tokenizer = None
         self.model = None
         self.load_model()
     
     def load_model(self):
-        """Load the fine-tuned model"""
+        """Load the fine-tuned model from Hugging Face"""
         try:
             if not TRANSFORMERS_AVAILABLE:
                 logger.warning("️ Transformers not available, cannot load fine-tuned model")
                 return False
                 
-            logger.info(f" Loading fine-tuned model from: {self.model_path}")
-            self.tokenizer = AutoTokenizer.from_pretrained(self.model_path, local_files_only=True)
-            self.model = AutoModelForCausalLM.from_pretrained(self.model_path, local_files_only=True)
+            logger.info(f" Loading fine-tuned model from Hugging Face: {self.model_path}")
+            
+            # Load directly from Hugging Face (removed local_files_only=True)
+            self.tokenizer = AutoTokenizer.from_pretrained(self.model_path)
+            self.model = AutoModelForCausalLM.from_pretrained(self.model_path)
             
             if self.tokenizer.pad_token is None:
                 self.tokenizer.pad_token = self.tokenizer.eos_token
             
-            logger.info(" Fine-tuned model loaded successfully!")
+            logger.info(" Fine-tuned model loaded successfully from Hugging Face!")
             return True
         except Exception as e:
             logger.error(f" Error loading fine-tuned model: {e}")
+            logger.warning(" Fine-tuned model will not be available, using fallback analysis")
             return False
     
     def generate_response(self, prompt, max_length=None, max_new_tokens=None, temperature=0.7, num_beams=1, repetition_penalty=1.0):
@@ -649,7 +722,7 @@ class AgriculturalAPI:
         logger.info(" AgriculturalAPI initialized (lazy model loading)")
     
     def _ensure_loaded(self):
-        """Lazy load model on first request"""
+        """Lazy load models on first request"""
         if not self._initialized:
             logger.info(" Loading GCN model on first request...")
             # Load only the GCN model (small, just weights)
@@ -659,6 +732,18 @@ class AgriculturalAPI:
             else:
                 logger.warning(" GCN model not available, using constraint-based recommendations only")
                 self.models_loaded = False
+            
+            # Try to load fine-tuned LLM (optional, will use fallback if unavailable)
+            if TRANSFORMERS_AVAILABLE and self.finetuned_llm is None:
+                try:
+                    logger.info(" Attempting to load fine-tuned LLM from Hugging Face...")
+                    self.finetuned_llm = FineTunedLLM()  # Will use Hugging Face repo by default
+                    if self.finetuned_llm.model is None:
+                        logger.warning(" Fine-tuned LLM not available, will use fallback analysis")
+                        self.finetuned_llm = None
+                except Exception as e:
+                    logger.warning(f" Failed to load fine-tuned LLM: {e}. Using fallback analysis.")
+                    self.finetuned_llm = None
             
             self.data_loaded = True  # Mark as loaded (even though we skip heavy data)
             self._initialized = True

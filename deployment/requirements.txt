@@ -10,3 +10,4 @@ reportlab==4.0.4
 transformers==4.35.0
 safetensors==0.4.1
 torch==2.0.1
+huggingface_hub>=0.20.0
