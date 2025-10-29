@@ -602,6 +602,8 @@ class FineTunedLLM:
     
     # Hugging Face repository ID for fine-tuned LLM
     HF_REPO_ID = "Awongo/agricultural-llm-finetuned"
+    # Base model for tokenizer fallback (DialoGPT-small)
+    BASE_MODEL_ID = "microsoft/DialoGPT-small"
     
     def __init__(self, model_path=None):
         # Use Hugging Face repo ID if no local path provided
@@ -651,8 +653,18 @@ class FineTunedLLM:
                             trust_remote_code=True
                         )
                     except Exception as e:
-                        logger.error(f" All tokenizer loading methods failed: {e}")
-                        raise
+                        logger.error(f" All tokenizer loading methods from fine-tuned repo failed: {e}")
+                        # Final fallback: Use base model tokenizer
+                        logger.info(f" Attempting fallback to base model tokenizer: {self.BASE_MODEL_ID}")
+                        try:
+                            self.tokenizer = AutoTokenizer.from_pretrained(
+                                self.BASE_MODEL_ID,
+                                use_fast=False
+                            )
+                            logger.info(" Successfully loaded base model tokenizer as fallback")
+                        except Exception as base_error:
+                            logger.error(f" Base model tokenizer loading also failed: {base_error}")
+                            raise
             
             # Load model
             try:
