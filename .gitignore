@@ -1,55 +1,48 @@
-# Model files (too large for git)
+# Data files (too large for GitHub)
+Dataset/
+*.csv
+*.json
 *.pth
 *.safetensors
-*.ckpt
-*.h5
-*.pb
-*.onnx
+*.bin
+*.pt
+*.tfevents*
 
-# Large data files - Allow all files
-*.pkl
-*.pickle
-*.parquet
+# Model files (already uploaded to Hugging Face)
+deployment/models/*.pth
+deployment/models/*.json
+deployment/processed/trained_models/
+deployment/quick_fine_tuned_fast/checkpoint-*
+deployment/quick_fine_tuned_fast/logs/
 
-# Directories with large files - Keep them for deployment
-# deployment/quick_fine_tuned_fast/
-# deployment/data/
-# deployment/processed/
-# deployment/models/
-Literature_reviews/
-
-# Python
+# Python cache
 __pycache__/
-*.py[cod]
-*$py.class
-*.so
+*.pyc
+*.pyo
+*.pyd
 .Python
+
+# Environment
+.env
+.venv
 env/
 venv/
 ENV/
-
-# Flask
-instance/
-.webassets-cache
-
-# Environment variables
-.env
-.env.local
 
 # IDE
 .vscode/
 .idea/
 *.swp
 *.swo
-*~
 
 # OS
 .DS_Store
 Thumbs.db
 
-# Logs
-*.log
+# Jupyter
+.ipynb_checkpoints/
 
 # Temporary files
 *.tmp
-*.temp
+*.log
+*.bak

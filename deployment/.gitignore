@@ -32,12 +32,10 @@ Thumbs.db
 # Logs
 *.log
 
-# Model files (if too large for git)
-models/*.pth
-models/*.ckpt
-
-# Fine-tuned model directory (too large)
-quick_fine_tuned_fast/
+# Model files - Now using Git LFS for large files
+# models/*.pth
+# models/*.ckpt
+# quick_fine_tuned_fast/
 
 # Data files (large datasets)
 *.csv

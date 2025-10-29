@@ -978,7 +978,7 @@ class AgriculturalAPI:
                 suitability_desc = "strong suitability"
             elif score >= 0.40:
                 suitability_desc = "moderate suitability"
-            else:
+        else:
                 suitability_desc = "acceptable compatibility"
             
             insights_parts.append(f"Analysis indicates {crop_name} shows {suitability_desc} ({(score*100):.0f}%) with your conditions. ")
@@ -986,7 +986,7 @@ class AgriculturalAPI:
             if len(suitable_crops) > 1:
                 alt_count = len(suitable_crops) - 1
                 insights_parts.append(f"Additionally, {alt_count} alternative crop{'s' if alt_count > 1 else ''} show{'s' if alt_count == 1 else ''} strong potential. ")
-        else:
+            else:
             insights_parts.append("Multiple crops are suitable for your conditions with proper management. ")
         
         # Soil pH analysis
@@ -2887,7 +2887,7 @@ def home():
                         <div style="margin-top: 8px;"><i class="fas fa-check" style="color: #00ff96;"></i> Evaluating crop suitability</div>
                         <div style="margin-top: 8px;"><i class="fas fa-spinner fa-spin" style="color: #00ff96;"></i> Loading AI insights</div>
                     </div>
-                </div>
+            </div>
             
                 <!-- Error/Success Messages -->
                 <div class="error-message" id="errorMessage"></div>
@@ -3188,7 +3188,7 @@ def home():
                         html += `
                             <div class="crop-card" onclick="toggleCropDetails(this)">
                                 <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
-                                    <div class="crop-name">${crop.crop.charAt(0).toUpperCase() + crop.crop.slice(1)}</div>
+                                <div class="crop-name">${crop.crop.charAt(0).toUpperCase() + crop.crop.slice(1)}</div>
                                     <div class="crop-card-header-score">${suitabilityPercent}%</div>
                                 </div>
                                 <div class="score-bar">
@@ -3205,8 +3205,8 @@ def home():
                                                 <i class="fas fa-lightbulb"></i> Recommendations:
                                             </strong>
                                             <ul style="margin: 0; padding-left: 20px; color: #e0e6ed;">
-                                                ${crop.recommendations.map(rec => `<li>${rec}</li>`).join('')}
-                                            </ul>
+                                            ${crop.recommendations.map(rec => `<li>${rec}</li>`).join('')}
+                                        </ul>
                                         </div>
                                     ` : ''}
                                     ${crop.violations && crop.violations.length > 0 ? `
@@ -3215,8 +3215,8 @@ def home():
                                                 <i class="fas fa-exclamation-triangle"></i> Constraints:
                                             </strong>
                                             <ul style="margin: 0; padding-left: 20px; color: #e0e6ed;">
-                                                ${crop.violations.map(viol => `<li>${viol}</li>`).join('')}
-                                            </ul>
+                                            ${crop.violations.map(viol => `<li>${viol}</li>`).join('')}
+                                        </ul>
                                         </div>
                                     ` : ''}
                                     ${crop.farming_factors && crop.farming_factors.length > 0 ? `
@@ -3225,12 +3225,12 @@ def home():
                                                 <i class="fas fa-seedling"></i> Farming Factors:
                                             </strong>
                                             <ul style="margin: 0; padding-left: 20px; color: #e0e6ed;">
-                                                ${crop.farming_factors.map(factor => `<li>${factor}</li>`).join('')}
-                                            </ul>
+                                            ${crop.farming_factors.map(factor => `<li>${factor}</li>`).join('')}
+                                        </ul>
                                         </div>
                                     ` : ''}
-                                </div>
-                            </div>
+                    </div>
+                    </div>
                         `;
                     });
                     html += '</div>';
@@ -3246,11 +3246,11 @@ def home():
                             <div class="chart-container">
                                 <div>
                                     <canvas id="landAllocationChart"></canvas>
-                                </div>
+                    </div>
                                 <div class="chart-legend" id="landChartLegend"></div>
-                            </div>
-                        </div>
-                    `;
+                    </div>
+                    </div>
+                `;
                 }
                 
                 resultsContent.innerHTML = html;
